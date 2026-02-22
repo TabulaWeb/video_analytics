@@ -1,0 +1,110 @@
+# Production: все пароли и настройки камеры берутся из .env
+# Запуск: docker compose -f docker-compose.prod.yml --env-file .env up -d --build
+
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: people-counter-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-people_counter}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-people_counter_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - people-counter-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-people_counter}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: people-counter-mediamtx
+    restart: unless-stopped
+    ports:
+      - "8554:8554"
+      - "8888:8888"
+      - "8889:8889/tcp"
+      - "8889:8889/udp"
+      - "9997:9997"
+    volumes:
+      - ./infra/mediamtx/mediamtx.yml:/mediamtx.yml:ro
+    environment:
+      DAHUA_USERNAME: ${PC_DAHUA_USERNAME:-admin}
+      DAHUA_PASSWORD: ${PC_DAHUA_PASSWORD}
+    networks:
+      - people-counter-net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: people-counter-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - ./data:/app/data
+    environment:
+      PC_DAHUA_IP: mediamtx
+      PC_DAHUA_PORT: "8554"
+      PC_DAHUA_USERNAME: ${PC_DAHUA_USERNAME:-admin}
+      PC_DAHUA_PASSWORD: ${PC_DAHUA_PASSWORD}
+      PC_DB_URL: postgresql://${POSTGRES_USER:-people_counter}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-people_counter_db}
+      PC_MODEL_NAME: ${PC_MODEL_NAME:-yolov8n.pt}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mediamtx:
+        condition: service_started
+    networks:
+      - people-counter-net
+
+  admin:
+    build:
+      context: ./frontend/admin
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=${VITE_API_URL:-http://localhost:8000}
+    container_name: people-counter-admin
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+    depends_on:
+      - backend
+    networks:
+      - people-counter-net
+
+  analytics:
+    build:
+      context: ./frontend/analytics
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=${VITE_API_URL:-http://localhost:8000}
+    container_name: people-counter-analytics
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+    depends_on:
+      - backend
+    networks:
+      - people-counter-net
+
+networks:
+  people-counter-net:
+    driver: bridge
+
+volumes:
+  postgres_data:

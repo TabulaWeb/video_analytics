@@ -1,0 +1,150 @@
+╔══════════════════════════════════════════════════════════════╗
+║           PEOPLE COUNTER - Project Structure                 ║
+║                      Version 1.0.0                           ║
+╚══════════════════════════════════════════════════════════════╝
+
+vision/
+│
+├─── 📘 START HERE (First time? Read this!)
+│    └── START_HERE.md ......................... Quick 5-min guide
+│
+├─── 📖 Documentation (8 files)
+│    ├── README.md ............................. Main docs (600+ lines)
+│    ├── QUICKSTART.md ......................... Detailed setup
+│    ├── ARCHITECTURE.md ....................... Technical specs (650+ lines)
+│    ├── PROJECT_OVERVIEW.md ................... High-level view
+│    ├── SUMMARY.md ............................ Project summary
+│    ├── CHANGELOG.md .......................... Version history
+│    ├── CONTRIBUTING.md ....................... How to contribute
+│    └── FILES_CREATED.txt ..................... This structure
+│
+├─── ⚙️  Configuration (5 files)
+│    ├── requirements.txt ...................... Python dependencies
+│    ├── pyproject.toml ........................ Modern Python config
+│    ├── .env.example .......................... Config template
+│    ├── .gitignore ............................ Git exclusions
+│    └── Makefile .............................. Task automation
+│
+├─── 🚀 Launchers (2 files)
+│    ├── run.py ................................ Main launcher ⭐
+│    └── check_system.py ....................... Pre-flight check
+│
+├─── 📜 Legal
+│    └── LICENSE ............................... MIT License
+│
+├─── 💻 Application (app/)
+│    │
+│    ├── Core Files
+│    │   ├── __init__.py
+│    │   ├── main.py ........................... FastAPI app (240 lines)
+│    │   ├── cv_worker.py ...................... CV worker (434 lines)
+│    │   ├── counter.py ........................ Counting logic ⭐ (246 lines)
+│    │   ├── db.py ............................. Database (138 lines)
+│    │   ├── schemas.py ........................ Data models (45 lines)
+│    │   ├── config.py ......................... Settings (55 lines)
+│    │   └── utils.py .......................... Utilities (50 lines)
+│    │
+│    └── Web Interface (static/)
+│        ├── index.html ........................ UI (200 lines)
+│        └── main.js ........................... WebSocket client (180 lines)
+│
+└─── 🧪 Tests (tests/)
+     ├── __init__.py
+     └── test_counter.py ........................ Unit tests (248 lines)
+
+
+╔══════════════════════════════════════════════════════════════╗
+║                    QUICK REFERENCE                           ║
+╚══════════════════════════════════════════════════════════════╝
+
+📊 STATISTICS:
+   • Total files: 29
+   • Python files: 13
+   • Lines of code: ~2,900
+   • Documentation: 2,000+ lines
+
+🎯 KEY FILES:
+   ⭐ START_HERE.md ........... Start reading here
+   ⭐ run.py .................. Run this to start
+   ⭐ app/counter.py .......... Core counting logic
+   ⭐ app/cv_worker.py ........ Computer vision
+   ⭐ app/main.py ............. FastAPI server
+
+📦 DEPENDENCIES:
+   • ultralytics (YOLOv8)
+   • opencv-python
+   • numpy
+   • fastapi
+   • uvicorn
+   • websockets
+   • pydantic
+   • pydantic-settings
+
+🔧 QUICK START:
+   1. cd /Users/alextabula/Desktop/vision
+   2. python3 -m venv .venv
+   3. source .venv/bin/activate
+   4. pip install -r requirements.txt
+   5. python check_system.py
+   6. python run.py
+   7. Open http://localhost:8000
+
+💡 FEATURES:
+   ✅ YOLOv8 person detection
+   ✅ ByteTrack multi-object tracking
+   ✅ Vertical line crossing detection
+   ✅ Real-time web interface (WebSocket)
+   ✅ SQLite database
+   ✅ OpenCV debug window
+   ✅ REST API with Swagger docs
+   ✅ Cross-platform support
+   ✅ Production-ready
+
+🎮 KEYBOARD CONTROLS (Debug Window):
+   Q - Quit application
+   R - Reset counters
+   A - Move line left
+   D - Move line right
+
+🌐 WEB ENDPOINTS:
+   / .......................... Main interface
+   /api/stats/current ......... Current statistics
+   /api/events ................ Recent events
+   /api/reset ................. Reset counters
+   /ws ........................ WebSocket stream
+   /docs ...................... API documentation (Swagger)
+   /health .................... Health check
+
+📁 GENERATED FILES (after running):
+   • people_counter.db ........ SQLite database
+   • __pycache__/ ............. Python cache
+   • .venv/ ................... Virtual environment
+
+🔗 DOCUMENTATION FLOW:
+   New User       → START_HERE.md
+   Setup Guide    → QUICKSTART.md
+   Full Reference → README.md
+   Technical      → ARCHITECTURE.md
+   Overview       → PROJECT_OVERVIEW.md
+   Development    → CONTRIBUTING.md
+
+💻 MAKEFILE COMMANDS:
+   make install ............... Install dependencies
+   make check ................. Run system check
+   make run ................... Run application
+   make test .................. Run tests
+   make clean ................. Clean generated files
+   make help .................. Show all commands
+
+📞 SUPPORT:
+   • Read README.md for full documentation
+   • Check QUICKSTART.md for setup help
+   • Run: python check_system.py
+   • See ARCHITECTURE.md for technical details
+   • Open GitHub issue for bugs
+
+╔══════════════════════════════════════════════════════════════╗
+║                   READY TO START!                            ║
+║                                                              ║
+║   👉  Read START_HERE.md or run: python run.py              ║
+╚══════════════════════════════════════════════════════════════╝

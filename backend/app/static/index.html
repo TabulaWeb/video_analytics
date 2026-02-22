@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Счетчик людей - Мониторинг в реальном времени</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+        
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }
+        
+        .subtitle {
+            opacity: 0.9;
+            font-size: 1.1rem;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-left: 10px;
+            animation: pulse 2s infinite;
+        }
+        
+        .status-online {
+            background-color: #10b981;
+        }
+        
+        .status-offline {
+            background-color: #ef4444;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .video-container {
+            background: white;
+            border-radius: 12px;
+            padding: 0;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            margin-bottom: 30px;
+            overflow: hidden;
+        }
+        
+        .video-feed {
+            width: 100%;
+            height: auto;
+            display: block;
+            background: #1f2937;
+            min-height: 400px;
+            object-fit: contain;
+            object-fit: contain;
+        }
+        
+        .video-placeholder {
+            width: 100%;
+            height: 400px;
+            background: #1f2937;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #9ca3af;
+            font-size: 1.2rem;
+        }
+        
+        .dashboard {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        
+        .counter-card {
+            text-align: center;
+        }
+        
+        .counter-label {
+            font-size: 0.9rem;
+            color: #6b7280;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+        }
+        
+        .counter-value {
+            font-size: 3rem;
+            font-weight: bold;
+            color: #1f2937;
+        }
+        
+        .counter-in .counter-value {
+            color: #10b981;
+        }
+        
+        .counter-out .counter-value {
+            color: #ef4444;
+        }
+        
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 10px 0;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        
+        .info-row:last-child {
+            border-bottom: none;
+        }
+        
+        .info-label {
+            color: #6b7280;
+        }
+        
+        .info-value {
+            font-weight: 600;
+            color: #1f2937;
+        }
+        
+        .events-card {
+            grid-column: 1 / -1;
+        }
+        
+        .events-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .events-title {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: #1f2937;
+        }
+        
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .btn-reset {
+            background-color: #ef4444;
+            color: white;
+        }
+        
+        .btn-reset:hover {
+            background-color: #dc2626;
+        }
+        
+        .events-list {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .event-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px;
+            border-bottom: 1px solid #e5e7eb;
+            animation: slideIn 0.3s ease-out;
+        }
+        
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+        
+        .event-item:hover {
+            background-color: #f9fafb;
+        }
+        
+        .event-badge {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+        
+        .badge-in {
+            background-color: #d1fae5;
+            color: #065f46;
+        }
+        
+        .badge-out {
+            background-color: #fee2e2;
+            color: #991b1b;
+        }
+        
+        .event-track {
+            color: #6b7280;
+            font-size: 0.9rem;
+        }
+        
+        .event-time {
+            color: #9ca3af;
+            font-size: 0.85rem;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #9ca3af;
+        }
+        
+        .btn-reset {
+            background-color: #3b82f6;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: background-color 0.2s;
+        }
+        
+        .btn-reset:hover {
+            background-color: #2563eb;
+        }
+        
+        .btn-danger {
+            background-color: #ef4444;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: background-color 0.2s;
+        }
+        
+        .btn-danger:hover {
+            background-color: #dc2626;
+        }
+        
+        .footer {
+            text-align: center;
+            color: white;
+            opacity: 0.8;
+            margin-top: 30px;
+            font-size: 0.9rem;
+        }
+        
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Счетчик Людей</h1>
+            <p class="subtitle">
+                Мониторинг в реальном времени
+                <span id="statusIndicator" class="status-indicator status-offline"></span>
+            </p>
+        </header>
+        
+        <!-- Video Feed -->
+        <div class="video-container">
+            <img id="videoFeed" class="video-feed" src="/video_feed" alt="Видеопоток" 
+                 onerror="this.style.display='none'; document.getElementById('videoPlaceholder').style.display='flex';">
+            <div id="videoPlaceholder" class="video-placeholder" style="display: none;">
+                📹 Камера отключена - Ожидание видеопотока...
+            </div>
+            <div class="video-controls" style="padding: 10px; background: rgba(0,0,0,0.1); text-align: center; border-top: 1px solid rgba(255,255,255,0.1);">
+                <label for="cameraSource" style="color: white; margin-right: 10px; font-weight: 500;">Источник камеры:</label>
+                <select id="cameraSource" style="padding: 8px 15px; border-radius: 6px; border: none; font-size: 14px; cursor: pointer; background: white; min-width: 200px;">
+                    <option value="webcam">📷 Веб-камера (ноутбук)</option>
+                    <option value="dahua">🎥 IP камера Dahua</option>
+                </select>
+                <span id="switchStatus" style="margin-left: 15px; color: #10b981; font-size: 14px;"></span>
+            </div>
+        </div>
+        
+        <div class="dashboard">
+            <div class="card counter-card counter-in">
+                <div class="counter-label">Вход (IN)</div>
+                <div class="counter-value" id="inCounter">0</div>
+            </div>
+            
+            <div class="card counter-card counter-out">
+                <div class="counter-label">Выход (OUT)</div>
+                <div class="counter-value" id="outCounter">0</div>
+            </div>
+            
+            <div class="card">
+                <div class="counter-label">Статус Системы</div>
+                <div class="info-row">
+                    <span class="info-label">Камера</span>
+                    <span class="info-value" id="cameraStatus">Инициализация...</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Модель</span>
+                    <span class="info-value" id="modelStatus">Загрузка...</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Активные треки</span>
+                    <span class="info-value" id="activeTracks">0</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Соединение</span>
+                    <span class="info-value" id="wsStatus">Подключение...</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="card events-card">
+            <div class="events-header">
+                <h2 class="events-title">Последние События</h2>
+                <div style="display: flex; gap: 10px;">
+                    <button class="btn btn-reset" onclick="resetCounters()">🔄 Сбросить</button>
+                    <button class="btn btn-danger" onclick="clearEvents()">🗑️ Очистить</button>
+                </div>
+            </div>
+            <div class="events-list" id="eventsList">
+                <div class="empty-state">Ожидание событий...</div>
+            </div>
+        </div>
+        
+        <footer class="footer">
+            <p>YOLOv8 • FastAPI • WebSocket</p>
+        </footer>
+    </div>
+    
+    <script src="/static/main.js"></script>
+</body>
+</html>

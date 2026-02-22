@@ -1,0 +1,80 @@
+# MediaMTX configuration for Dahua IP camera
+# See: https://github.com/bluenviron/mediamtx
+
+###############################################
+# General settings
+###############################################
+
+# Verbosity of the program: error, warn, info, debug
+logLevel: info
+logDestinations: [stdout]
+logFile: mediamtx.log
+
+# API server
+api: yes
+apiAddress: :9997
+
+# Metrics
+metrics: yes
+metricsAddress: :9998
+
+###############################################
+# RTSP server
+###############################################
+
+rtspAddress: :8554
+protocols: [tcp, udp]
+encryption: "no"
+
+###############################################
+# HLS server
+###############################################
+
+hls: yes
+hlsAddress: :8888
+hlsAllowOrigin: "*"  # Allow CORS for browser access
+hlsVariant: lowLatency
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+
+###############################################
+# WebRTC server (optional, for lower latency)
+###############################################
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcAllowOrigin: "*"
+
+###############################################
+# Paths (camera streams)
+###############################################
+
+paths:
+  # Dahua camera main stream
+  dahua:
+    # Pull RTSP from Dahua camera
+    # Format: rtsp://<user>:<pass>@<ip>:<port>/cam/realmonitor?channel=1&subtype=0
+    # subtype=0 - main stream (high quality)
+    # subtype=1 - sub stream (lower quality, less bandwidth)
+    source: rtsp://admin:daniil2009@192.168.0.201:554/cam/realmonitor?channel=1&subtype=0
+    
+    # Use TCP transport for stability (prevents packet loss over WiFi/LAN)
+    sourceProtocol: tcp
+    
+    # Pull stream only when someone is watching (saves bandwidth)
+    sourceOnDemand: yes
+    sourceOnDemandStartTimeout: 10s
+    sourceOnDemandCloseAfter: 10s
+    
+    # Transcoding (disabled by default - pass through original stream)
+    # Uncomment if you need to transcode for compatibility:
+    # runOnInit: ffmpeg -i rtsp://localhost:$RTSP_PORT/$MTX_PATH -c:v libx264 -preset ultrafast -b:v 1M -f rtsp rtsp://localhost:$RTSP_PORT/$MTX_PATH_transcoded
+    
+  # Optional: Low-quality sub-stream for mobile/bandwidth-constrained clients
+  dahua_sub:
+    source: rtsp://admin:daniil2009@192.168.0.201:554/cam/realmonitor?channel=1&subtype=1
+    sourceProtocol: tcp
+    sourceOnDemand: yes
+    sourceOnDemandStartTimeout: 10s
+    sourceOnDemandCloseAfter: 10s
