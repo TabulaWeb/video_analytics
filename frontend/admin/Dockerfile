@@ -7,9 +7,10 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies (npm ci + memory limit for low-RAM VPS)
-ENV NODE_OPTIONS=--max-old-space-size=1024
-RUN npm ci
+# Install dependencies (memory limit for 2GB RAM VPS; npm install more tolerant than npm ci)
+ENV NODE_OPTIONS=--max-old-space-size=768
+RUN npm config set fetch-retries 5 fetch-timeout 120000 && \
+    npm install --no-audit --no-fund
 
 # Copy application code
 COPY . .

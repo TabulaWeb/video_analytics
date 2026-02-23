@@ -251,6 +251,12 @@ docker compose -f docker-compose.full.yml ps
 
 ## 9. Полезные команды
 
+**Сборка admin/analytics падает на `npm install`:** выполните сборку с полным выводом и посмотрите последние строки ошибки:
+```bash
+docker compose -f docker-compose.full.yml build --no-cache --progress=plain admin 2>&1 | tail -80
+```
+Если в логе видно нехватку памяти (OOM / killed) — добавьте swap (шаг 1) или соберите образ на более мощной машине и загрузите в registry.
+
 ```bash
 # Логи всех сервисов
 docker compose -f docker-compose.full.yml logs -f
