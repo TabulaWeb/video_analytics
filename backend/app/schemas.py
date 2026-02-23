@@ -54,6 +54,12 @@ class CameraSettingsResponse(BaseModel):
         from_attributes = True
 
 
+class CameraSettingsSaveResponse(CameraSettingsResponse):
+    """Response after save/update: settings + connection status (200 even if camera unreachable)."""
+    camera_connected: bool = True
+    message: Optional[str] = None
+
+
 # ============================================
 # Event Schemas
 # ============================================

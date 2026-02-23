@@ -22,7 +22,7 @@ import uvicorn
 from app.config import settings
 from app.schemas import (
     CrossingEvent, CurrentStats, WSMessage, ResetResponse,
-    Token, LoginRequest, CameraSettingsCreate, CameraSettingsResponse,
+    Token, LoginRequest, CameraSettingsCreate, CameraSettingsResponse, CameraSettingsSaveResponse,
     PeriodStats, HourlyStats, PeakHour, ExportRequest, SystemStatus,
     PeakHourAnalytics, WeekdayStats, Averages, GrowthTrend, PeakPrediction
 )
@@ -262,13 +262,13 @@ async def get_camera_settings(
     return settings
 
 
-@app.post("/api/camera/settings", response_model=CameraSettingsResponse)
+@app.post("/api/camera/settings", response_model=CameraSettingsSaveResponse)
 async def create_camera_settings(
     settings_data: CameraSettingsCreate,
     db: Session = Depends(get_db),
     current_user = Depends(get_current_active_user)
 ):
-    """Create or update camera settings and restart camera."""
+    """Create or update camera settings and restart camera. Returns 200; camera_connected=False if camera unreachable."""
     global cv_worker
     
     settings_dict = settings_data.model_dump()
@@ -308,24 +308,26 @@ async def create_camera_settings(
     # Wait for initialization and check camera status
     await asyncio.sleep(3)
     
-    # Check if camera connected successfully
-    if cv_worker.camera_status != "online":
-        raise HTTPException(
-            status_code=503,
-            detail=f"Настройки сохранены, но не удалось подключиться к камере. Проверьте IP адрес ({new_settings.ip}:{new_settings.port}), логин и пароль."
-        )
-    
-    return new_settings
+    connected = cv_worker.camera_status == "online"
+    msg = None if connected else (
+        f"Настройки сохранены. Камера пока недоступна с этого сервера "
+        f"({new_settings.ip}:{new_settings.port}). Проверьте сеть/VPN или используйте MediaMTX."
+    )
+    return CameraSettingsSaveResponse(
+        **CameraSettingsResponse.model_validate(new_settings).model_dump(),
+        camera_connected=connected,
+        message=msg,
+    )
 
 
-@app.put("/api/camera/settings/{settings_id}", response_model=CameraSettingsResponse)
+@app.put("/api/camera/settings/{settings_id}", response_model=CameraSettingsSaveResponse)
 async def update_camera_settings(
     settings_id: int,
     settings_data: CameraSettingsCreate,
     db: Session = Depends(get_db),
     current_user = Depends(get_current_active_user)
 ):
-    """Update camera settings and restart camera."""
+    """Update camera settings and restart camera. Returns 200; camera_connected=False if camera unreachable."""
     global cv_worker
     
     settings_dict = settings_data.model_dump()
@@ -367,14 +369,16 @@ async def update_camera_settings(
     # Wait for initialization and check camera status
     await asyncio.sleep(3)
     
-    # Check if camera connected successfully
-    if cv_worker.camera_status != "online":
-        raise HTTPException(
-            status_code=503,
-            detail=f"Настройки обновлены, но не удалось подключиться к камере. Проверьте IP адрес ({updated_settings.ip}:{updated_settings.port}), логин и пароль."
-        )
-    
-    return updated_settings
+    connected = cv_worker.camera_status == "online"
+    msg = None if connected else (
+        f"Настройки сохранены. Камера пока недоступна с этого сервера "
+        f"({updated_settings.ip}:{updated_settings.port}). Проверьте сеть/VPN или используйте MediaMTX."
+    )
+    return CameraSettingsSaveResponse(
+        **CameraSettingsResponse.model_validate(updated_settings).model_dump(),
+        camera_connected=connected,
+        message=msg,
+    )
 
 
 # ============================================

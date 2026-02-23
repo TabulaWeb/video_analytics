@@ -37,8 +37,9 @@ services:
     volumes:
       - ./infra/mediamtx/mediamtx.yml:/mediamtx.yml:ro
     environment:
-      DAHUA_USERNAME: ${PC_DAHUA_USERNAME:-admin}
-      DAHUA_PASSWORD: ${PC_DAHUA_PASSWORD}
+      # Адрес камеры, доступный С СЕРВЕРА: локальный IP, белый IP дома (проброс) или VPN IP
+      MTX_PATHS_DAHUA_SOURCE: rtsp://${PC_DAHUA_USERNAME:-admin}:${PC_DAHUA_PASSWORD}@${CAMERA_IP:-192.168.0.201}:${CAMERA_PORT:-554}/cam/realmonitor?channel=1&subtype=0
+      MTX_PATHS_DAHUA_SUB_SOURCE: rtsp://${PC_DAHUA_USERNAME:-admin}:${PC_DAHUA_PASSWORD}@${CAMERA_IP:-192.168.0.201}:${CAMERA_PORT:-554}/cam/realmonitor?channel=1&subtype=1
     networks:
       - people-counter-net
 

@@ -121,26 +121,34 @@ export default function CameraSettings() {
 
     setIsSaving(true);
     try {
-      if (settings.id) {
-        await cameraAPI.updateSettings(settings.id, settings);
+      const result = settings.id
+        ? await cameraAPI.updateSettings(settings.id, settings)
+        : await cameraAPI.createSettings(settings);
+      const connected = (result as { camera_connected?: boolean }).camera_connected !== false;
+      const msg = (result as { message?: string }).message;
+
+      if (connected) {
+        toast({
+          title: 'Настройки сохранены ✅',
+          description: 'Камера успешно подключена и перезапущена',
+          status: 'success',
+          duration: 5000,
+        });
       } else {
-        await cameraAPI.createSettings(settings);
+        toast({
+          title: 'Настройки сохранены',
+          description: msg || 'Камера пока недоступна с этого сервера. Проверьте сеть или MediaMTX.',
+          status: 'warning',
+          duration: 8000,
+          isClosable: true,
+        });
       }
-      
-      toast({
-        title: 'Настройки сохранены ✅',
-        description: 'Камера успешно подключена и перезапущена',
-        status: 'success',
-        duration: 5000,
-      });
     } catch (error: any) {
       console.error('Save error:', error);
       const status = error.response?.status;
       const errorMessage = error.response?.data?.detail || error.message || 'Не удалось сохранить настройки';
       
-      // Handle different error types
       if (status === 503) {
-        // Camera connection error
         toast({
           title: '⚠️ Ошибка подключения к камере',
           description: errorMessage,

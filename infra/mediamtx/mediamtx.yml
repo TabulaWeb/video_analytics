@@ -57,7 +57,8 @@ paths:
     # Format: rtsp://<user>:<pass>@<ip>:<port>/cam/realmonitor?channel=1&subtype=0
     # subtype=0 - main stream (high quality)
     # subtype=1 - sub stream (lower quality, less bandwidth)
-    source: rtsp://admin:daniil2009@192.168.0.201:554/cam/realmonitor?channel=1&subtype=0
+    # Реальный URL задаётся в docker-compose через MTX_PATHS_DAHUA_SOURCE (из .env: CAMERA_IP, логин/пароль)
+    source: rtsp://admin:password@192.168.0.201:554/cam/realmonitor?channel=1&subtype=0
     
     # Use TCP transport for stability (prevents packet loss over WiFi/LAN)
     sourceProtocol: tcp
@@ -73,7 +74,7 @@ paths:
     
   # Optional: Low-quality sub-stream for mobile/bandwidth-constrained clients
   dahua_sub:
-    source: rtsp://admin:daniil2009@192.168.0.201:554/cam/realmonitor?channel=1&subtype=1
+    source: rtsp://admin:password@192.168.0.201:554/cam/realmonitor?channel=1&subtype=1
     sourceProtocol: tcp
     sourceOnDemand: yes
     sourceOnDemandStartTimeout: 10s
