@@ -22,7 +22,10 @@ RUN pip install --no-cache-dir --default-timeout=300 \
     "pydantic-settings>=2.0.0" python-multipart "python-jose[cryptography]>=3.3.0" \
     "passlib[bcrypt]>=1.7.4" python-dotenv "pandas>=2.0.0" openpyxl reportlab \
     "sqlalchemy>=2.0.0" "psycopg2-binary>=2.9.9" "pytest>=7.4.0"
-# Step 2: numpy, opencv, ultralytics, matplotlib (heavier; if this fails, run build with --progress=plain to see pip error)
+# Step 2a: PyTorch CPU-only (avoids pulling ~2GB+ of CUDA libs; ultralytics will use this)
+RUN pip install --no-cache-dir --default-timeout=300 \
+    torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# Step 2b: numpy, opencv, ultralytics, matplotlib (ultralytics will use already-installed torch)
 RUN pip install --no-cache-dir --default-timeout=300 \
     "numpy>=1.24.0,<2.0.0" "opencv-python-headless>=4.8.0" "ultralytics>=8.0.0" "matplotlib>=3.7.0"
 
