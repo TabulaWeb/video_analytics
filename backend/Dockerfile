@@ -14,8 +14,9 @@ WORKDIR /app
 # Copy requirements
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies (upgrade pip, longer timeout for slow/low-memory builds)
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir --default-timeout=300 -r requirements.txt
 
 # Copy application code
 COPY . .
