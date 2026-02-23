@@ -1,7 +1,9 @@
 """FastAPI application with WebSocket for real-time People Counter - Extended Version."""
 import asyncio
+import logging
 import os
 import time
+import traceback
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import List
@@ -192,20 +194,26 @@ if os.path.exists(static_path):
 @app.post("/api/auth/login", response_model=Token)
 async def login(request: LoginRequest):
     """Authenticate user and return JWT token."""
-    user = authenticate_user(request.username, request.password)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
+    try:
+        user = authenticate_user(request.username, request.password)
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect username or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        access_token = create_access_token(
+            data={"sub": user.username},
+            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
         )
-    
-    access_token = create_access_token(
-        data={"sub": user.username},
-        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    )
-    
-    return {"access_token": access_token, "token_type": "bearer"}
+        if isinstance(access_token, bytes):
+            access_token = access_token.decode("utf-8")
+        return {"access_token": access_token, "token_type": "bearer"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.exception("Login failed: %s", e)
+        raise HTTPException(status_code=500, detail="Internal server error during login")
 
 
 @app.get("/api/auth/me")
