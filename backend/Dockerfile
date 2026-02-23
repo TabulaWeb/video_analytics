@@ -1,9 +1,9 @@
 # Python 3.10 base image
 FROM python:3.10-slim
 
-# Install system dependencies
+# Install system dependencies (libgl1-mesa-dri: replacement for libgl1-mesa-glx on Debian 12+)
 RUN apt-get update && apt-get install -y \
-    libgl1-mesa-glx \
+    libgl1-mesa-dri \
     libglib2.0-0 \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
