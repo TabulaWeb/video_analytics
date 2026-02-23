@@ -173,7 +173,7 @@ export default function Dashboard() {
             >
               {systemStatus?.camera_online ? (
                 <Image
-                  src="http://localhost:8000/video_feed"
+                  src={`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/video_feed`}
                   alt="Live camera feed"
                   w="full"
                   h="full"

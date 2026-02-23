@@ -60,6 +60,7 @@ services:
       PC_DAHUA_USERNAME: ${PC_DAHUA_USERNAME:-admin}
       PC_DAHUA_PASSWORD: ${PC_DAHUA_PASSWORD}
       PC_DB_URL: postgresql://${POSTGRES_USER:-people_counter}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-people_counter_db}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -78,7 +79,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - VITE_API_URL=http://localhost:8000
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
     depends_on:
       - backend
     networks:
@@ -94,7 +95,7 @@ services:
     ports:
       - "3001:3001"
     environment:
-      - VITE_API_URL=http://localhost:8000
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
     depends_on:
       - backend
     networks:

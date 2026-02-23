@@ -163,17 +163,16 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS configuration
+# CORS: allow origins from env (comma-separated) or default localhost
+_cors_default = [
+    "http://localhost:3000", "http://localhost:3001", "http://localhost:3002",
+    "http://127.0.0.1:3000", "http://127.0.0.1:3001", "http://127.0.0.1:3002",
+]
+_cors_env = os.environ.get("CORS_ORIGINS", "").strip()
+cors_origins = [o.strip() for o in _cors_env.split(",") if o.strip()] or _cors_default
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:3001", 
-        "http://localhost:3002",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:3001",
-        "http://127.0.0.1:3002"
-    ],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
