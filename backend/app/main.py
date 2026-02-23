@@ -11,8 +11,8 @@ import cv2
 import queue
 import threading
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status
-from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse, Response
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Request, status
+from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse, Response, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -155,6 +155,10 @@ async def lifespan(app: FastAPI):
 
 
 # ============================================
+# Ensure exceptions are logged to stderr (visible in docker logs)
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+# ============================================
 # FastAPI App
 # ============================================
 
@@ -179,6 +183,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Log full traceback for any unhandled exception (shows in docker logs)."""
+    logging.exception("Unhandled exception: %s", exc)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
 # Mount static files (legacy UI)
