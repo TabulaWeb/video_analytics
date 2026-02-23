@@ -14,9 +14,17 @@ WORKDIR /app
 # Copy requirements
 COPY requirements.txt .
 
-# Install Python dependencies (upgrade pip, longer timeout for slow/low-memory builds)
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir --default-timeout=300 -r requirements.txt
+# Upgrade pip and install in two steps (if one fails, error is clearer)
+RUN pip install --upgrade pip
+# Step 1: lightweight deps (no heavy binaries)
+RUN pip install --no-cache-dir --default-timeout=300 \
+    "fastapi>=0.104.0" "uvicorn[standard]>=0.24.0" websockets "pydantic>=2.0.0" \
+    "pydantic-settings>=2.0.0" python-multipart "python-jose[cryptography]>=3.3.0" \
+    "passlib[bcrypt]>=1.7.4" python-dotenv "pandas>=2.0.0" openpyxl reportlab \
+    "sqlalchemy>=2.0.0" "psycopg2-binary>=2.9.9" "pytest>=7.4.0"
+# Step 2: numpy, opencv, ultralytics, matplotlib (heavier; if this fails, run build with --progress=plain to see pip error)
+RUN pip install --no-cache-dir --default-timeout=300 \
+    "numpy>=1.24.0,<2.0.0" "opencv-python-headless>=4.8.0" "ultralytics>=8.0.0" "matplotlib>=3.7.0"
 
 # Copy application code
 COPY . .
