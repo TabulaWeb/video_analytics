@@ -5,19 +5,16 @@ JWT Authentication module for People Counter API.
 from datetime import datetime, timedelta
 from typing import Optional
 
+import bcrypt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 from pydantic import BaseModel
 
 # Security configuration
 SECRET_KEY = "your-secret-key-change-in-production"  # TODO: Move to .env
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
-
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # HTTP Bearer token scheme
 security = HTTPBearer()
@@ -52,13 +49,19 @@ fake_users_db = {
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a password against a hash."""
-    return pwd_context.verify(plain_password, hashed_password)
+    """Verify a password against a bcrypt hash."""
+    try:
+        return bcrypt.checkpw(
+            plain_password.encode("utf-8"),
+            hashed_password.encode("utf-8") if isinstance(hashed_password, str) else hashed_password,
+        )
+    except Exception:
+        return False
 
 
 def get_password_hash(password: str) -> str:
-    """Hash a password."""
-    return pwd_context.hash(password)
+    """Hash a password with bcrypt."""
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
 def get_user(username: str) -> Optional[UserInDB]:

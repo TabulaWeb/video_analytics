@@ -20,7 +20,7 @@ RUN pip install --upgrade pip
 RUN pip install --no-cache-dir --default-timeout=300 \
     "fastapi>=0.104.0" "uvicorn[standard]>=0.24.0" websockets "pydantic>=2.0.0" \
     "pydantic-settings>=2.0.0" python-multipart "python-jose[cryptography]>=3.3.0" \
-    "passlib[bcrypt]>=1.7.4" python-dotenv "pandas>=2.0.0" openpyxl reportlab \
+    "bcrypt>=4.0.0" python-dotenv "pandas>=2.0.0" openpyxl reportlab \
     "sqlalchemy>=2.0.0" "psycopg2-binary>=2.9.9" "pytest>=7.4.0"
 # Step 2a: PyTorch CPU-only (avoids pulling ~2GB+ of CUDA libs; ultralytics will use this)
 RUN pip install --no-cache-dir --default-timeout=300 \
