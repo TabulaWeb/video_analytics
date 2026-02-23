@@ -1,8 +1,6 @@
 # Production: все пароли и настройки камеры берутся из .env
 # Запуск: docker compose -f docker-compose.prod.yml --env-file .env up -d --build
 
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16-alpine

@@ -1,8 +1,6 @@
 # Full stack: пароли из .env (как в prod)
 # Запуск: docker compose -f docker-compose.full.yml --env-file .env up -d --build
 
-version: '3.8'
-
 services:
   # PostgreSQL Database
   postgres:
