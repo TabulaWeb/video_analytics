@@ -1,4 +1,5 @@
 """Computer Vision worker: camera capture, detection, tracking, and counting."""
+import os
 import cv2
 import numpy as np
 import threading
@@ -89,7 +90,7 @@ class CVWorker:
             self.cap.release()
             self.cap = None
         
-        if settings.show_debug_window:
+        if settings.show_debug_window and os.environ.get("DISPLAY"):
             cv2.destroyAllWindows()
     
     def _init_camera(self) -> bool:
@@ -438,23 +439,22 @@ class CVWorker:
             self.last_fps_update = time.time()
     
     def _run(self):
-        """Main worker loop."""
+        """Main worker loop. Any unhandled exception here is caught so the main process stays up."""
         logger.info("CV Worker starting...")
-        
-        # Initialize components
-        if not self._init_camera():
-            logger.warning("CV Worker exiting: camera init failed")
+        try:
+            if not self._init_camera():
+                logger.warning("CV Worker exiting: camera init failed")
+                return
+            if not self._init_model():
+                logger.warning("CV Worker exiting: model init failed")
+                return
+            self._init_counter()
+            logger.info("CV Worker ready")
+        except Exception as e:
+            logger.exception("CV Worker init failed (server stays up): %s", e)
+            self.camera_status = "offline"
             return
-        
-        if not self._init_model():
-            logger.warning("CV Worker exiting: model init failed")
-            return
-        
-        self._init_counter()
-        
-        logger.info("CV Worker ready")
-        
-        # Main processing loop
+
         while self.running and not self.stop_event.is_set():
             try:
                 ret, frame = self.cap.read()
@@ -480,10 +480,9 @@ class CVWorker:
                     except Exception as e:
                         logger.debug("Frame callback error: %s", e)
                 
-                # Show debug window if enabled
-                if settings.show_debug_window:
+                # Debug window only when DISPLAY is set (avoid Qt/xcb crash in Docker/headless)
+                if settings.show_debug_window and os.environ.get("DISPLAY"):
                     cv2.imshow("People Counter", display_frame)
-                    
                     if not self._handle_keyboard():
                         break
                 
@@ -492,9 +491,11 @@ class CVWorker:
             except Exception as e:
                 logger.exception("Processing error: %s", e)
                 time.sleep(0.1)
-        
-        logger.info("CV Worker stopped")
-        self._release_resources()
+        except Exception as e:
+            logger.exception("CV Worker crashed (server stays up): %s", e)
+        finally:
+            logger.info("CV Worker stopped")
+            self._release_resources()
     
     def get_status(self) -> CurrentStats:
         """Get current status and statistics."""

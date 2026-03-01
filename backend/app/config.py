@@ -37,8 +37,8 @@ class Settings(BaseSettings):
     vps_hls_url: Optional[str] = Field(None, validation_alias=AliasChoices("VPS_HLS_URL", "PC_VPS_HLS_URL"))
     vps_webrtc_url: Optional[str] = Field(None, validation_alias=AliasChoices("VPS_WEBRTC_URL", "PC_VPS_WEBRTC_URL"))
     stream_preferred_protocol: Literal["webrtc", "hls"] = Field("webrtc", validation_alias=AliasChoices("STREAM_PREFERRED_PROTOCOL", "PC_STREAM_PREFERRED_PROTOCOL"))
-    # Run line-counting from HLS in VPS mode. Set to false if backend OOMs or HLS is unreachable from server.
-    vps_analysis_enabled: bool = Field(True, validation_alias=AliasChoices("VPS_ANALYSIS_ENABLED", "PC_VPS_ANALYSIS_ENABLED"))
+    # Run line-counting from HLS in VPS mode. Default false to avoid OOM on small VPS; set true if you have ~2GB+ RAM.
+    vps_analysis_enabled: bool = Field(False, validation_alias=AliasChoices("VPS_ANALYSIS_ENABLED", "PC_VPS_ANALYSIS_ENABLED"))
     
     # YOLO model settings
     model_name: str = "yolov8n.pt"  # yolov8n/s/m/l/x
@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     port: int = 8000
     
     # Debug window
-    show_debug_window: bool = True
+    show_debug_window: bool = False  # True needs DISPLAY (no headless/Docker)
     
     def get_dahua_rtsp_url(self) -> str:
         """Build RTSP URL for Dahua camera from settings."""
