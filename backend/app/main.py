@@ -87,13 +87,30 @@ def on_crossing_event(event: CrossingEvent):
     """
     Callback for CV worker when a crossing event occurs.
     
-    This runs in the CV worker thread, so we need to safely
-    schedule async operations.
+    This runs in the CV worker thread. Writes to PostgreSQL when db_url is set,
+    otherwise to legacy SQLite so analytics and API see the same data.
     """
-    # Save to database using legacy db module (for backward compatibility)
-    event_id = db.insert_event(event)
-    event.id = event_id
-    
+    if getattr(settings, "db_url", None) and settings.db_url and str(settings.db_url).startswith("postgresql://"):
+        session = SessionLocal()
+        try:
+            db_event = DBEvent(
+                timestamp=event.timestamp,
+                track_id=event.track_id,
+                direction=event.direction,
+            )
+            session.add(db_event)
+            session.commit()
+            session.refresh(db_event)
+            event.id = db_event.id
+        except Exception as e:
+            logger.exception("Failed to save crossing event to PostgreSQL: %s", e)
+            session.rollback()
+        finally:
+            session.close()
+    else:
+        event_id = db.insert_event(event)
+        event.id = event_id
+
     # Queue for WebSocket broadcast
     try:
         loop = asyncio.get_event_loop()
