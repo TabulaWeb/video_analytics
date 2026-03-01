@@ -109,6 +109,12 @@ docker compose -f docker-compose.full.yml logs -f backend
 
 Если в режиме VPS статус "offline" — проверь, что камера реально пушит на выбранный путь и что порты 8888/8889 доступны с той машины, откуда открываешь фронт (файрвол, CORS при необходимости).
 
+**Ошибки 400 (WHEP) или 404 (HLS):** путь в URL должен совпадать с путём в MediaMTX.
+- Камера пушит RTMP в `rtmp://сервер:1935/**dahua_push**` → в `.env` указывай **`dahua_push`**:  
+  `VPS_HLS_URL=http://...:8888/dahua_push/index.m3u8`, `VPS_WEBRTC_URL=http://...:8889/dahua_push`.
+- Поток тянется по RTSP (path **`dahua`**) → в `.env` указывай **`dahua`**:  
+  `VPS_HLS_URL=http://...:8888/dahua/index.m3u8`, `VPS_WEBRTC_URL=http://...:8889/dahua`.
+
 ---
 
 ## Краткий чеклист

@@ -73,7 +73,7 @@ function VpsPlayer({
   const hlsUrl = (config.vps_hls_url || '').trim();
   const tryWebrtcFirst = preferred === 'webrtc' && webrtcUrl && !webrtcError;
 
-  // WebRTC WHEP: client sends SDP offer via POST, server responds with 201 Created + SDP answer
+  // WebRTC WHEP: client sends SDP offer (recvonly) via POST, server responds with 201 + SDP answer
   useEffect(() => {
     if (!tryWebrtcFirst || !videoRef.current || !webrtcUrl) return;
     const whepUrl = webrtcUrl.endsWith('/whep') ? webrtcUrl : webrtcUrl.replace(/\/?$/, '') + '/whep';
@@ -85,6 +85,9 @@ function VpsPlayer({
         pc.ontrack = (e) => {
           if (videoRef.current && e.streams[0]) videoRef.current.srcObject = e.streams[0];
         };
+        // WHEP viewer: offer must be recvonly (spec). Add transceivers before createOffer.
+        pc.addTransceiver('video', { direction: 'recvonly' });
+        pc.addTransceiver('audio', { direction: 'recvonly' });
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
         const postRes = await fetch(whepUrl, {
