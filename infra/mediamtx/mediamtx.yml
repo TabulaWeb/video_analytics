@@ -65,7 +65,7 @@ paths:
     
     # Pull stream only when someone is watching (saves bandwidth)
     sourceOnDemand: yes
-    sourceOnDemandStartTimeout: 10s
+    sourceOnDemandStartTimeout: 30s   # Increase if camera is slow to respond (was 10s)
     sourceOnDemandCloseAfter: 10s
     
     # Transcoding (disabled by default - pass through original stream)
