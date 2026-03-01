@@ -221,14 +221,19 @@ export default function Analytics() {
 
   // WebSocket: данные аналитики приходят по сокету (при подключении и раз в 30 сек), без опроса REST
   useEffect(() => {
-    const wsUrl = (API_BASE_URL || '').replace(/^http/, 'ws').replace(/\/$/, '') + '/ws';
+    const base = API_BASE_URL || (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:8000` : 'http://localhost:8000');
+    const wsUrl = (base.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://').replace(/\/$/, '')) + '/ws';
     let ws: WebSocket | null = null;
     let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+    let connectTimeout: ReturnType<typeof setTimeout> | null = null;
+    let unmounted = false;
 
     const connect = () => {
+      if (unmounted) return;
       try {
         ws = new WebSocket(wsUrl);
         ws.onmessage = (event) => {
+          if (unmounted) return;
           try {
             const msg = JSON.parse(event.data);
             if (msg.type === 'analytics' && msg.data) {
@@ -243,26 +248,34 @@ export default function Analytics() {
           } catch (_) {}
         };
         ws.onopen = () => {
+          if (unmounted) return;
           fallbackTimer = setTimeout(() => {
-            if (!analyticsReceivedRef.current) fetchData(false);
             fallbackTimer = null;
+            if (!unmounted && !analyticsReceivedRef.current) fetchData(false);
           }, 5000);
         };
         ws.onerror = () => {};
         ws.onclose = () => {
           ws = null;
-          if (fallbackTimer) clearTimeout(fallbackTimer);
-          setTimeout(connect, 5000);
+          if (fallbackTimer) {
+            clearTimeout(fallbackTimer);
+            fallbackTimer = null;
+          }
+          if (!unmounted) setTimeout(connect, 5000);
         };
       } catch (_) {
-        setIsLoading(false);
+        if (!unmounted) setIsLoading(false);
       }
     };
 
-    connect();
+    // Небольшая задержка, чтобы в React Strict Mode cleanup успел выполниться до открытия сокета
+    connectTimeout = setTimeout(connect, 150);
+
     return () => {
+      unmounted = true;
+      if (connectTimeout) clearTimeout(connectTimeout);
       if (fallbackTimer) clearTimeout(fallbackTimer);
-      if (ws) ws.close();
+      if (ws) try { ws.close(); } catch (_) {}
     };
   }, []);
 
