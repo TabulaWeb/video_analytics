@@ -4,6 +4,11 @@ import logging
 import os
 import time
 import traceback
+
+from app.logging_config import setup_logging, get_logger
+
+setup_logging()
+logger = get_logger(__name__)
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import List
@@ -128,9 +133,12 @@ def on_frame_ready(frame):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle: startup and shutdown."""
-    # Startup
-    print("🚀 Starting People Counter application...")
-    print("⚠️  Camera will not start automatically - configure via Admin Panel")
+    stream_mode = getattr(settings, "stream_mode", "local") or "local"
+    logger.info("Starting People Counter application (stream_mode=%s)", stream_mode)
+    if stream_mode == "vps":
+        logger.info("VPS mode: VPS_HLS_URL=%s, VPS_WEBRTC_URL=%s", bool(settings.vps_hls_url), bool(settings.vps_webrtc_url))
+    else:
+        logger.info("Camera will not start automatically - configure via Admin Panel")
     
     # Do NOT start CV worker automatically
     # It will be started from Admin Panel after camera settings are configured
@@ -141,7 +149,7 @@ async def lifespan(app: FastAPI):
     yield
     
     # Shutdown
-    print("🛑 Shutting down...")
+    logger.info("Shutting down...")
     stats_task.cancel()
     
     global cv_worker
@@ -156,9 +164,7 @@ async def lifespan(app: FastAPI):
             pass
 
 
-# ============================================
-# Ensure exceptions are logged to stderr (visible in docker logs)
-logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+# Logging is configured in logging_config (PC_LOG_LEVEL / LOG_LEVEL env)
 
 # ============================================
 # FastAPI App
@@ -190,7 +196,7 @@ app.add_middleware(
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """Log full traceback for any unhandled exception (shows in docker logs)."""
-    logging.exception("Unhandled exception: %s", exc)
+    logger.exception("Unhandled exception: %s", exc)
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
 
@@ -225,7 +231,7 @@ async def login(request: LoginRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logging.exception("Login failed: %s", e)
+        logger.exception("Login failed: %s", e)
         raise HTTPException(status_code=500, detail="Internal server error during login")
 
 
@@ -295,7 +301,7 @@ async def create_camera_settings(
             message="В режиме VPS приложение не подключается к камере. Видео воспроизводится с VPS (HLS/WebRTC).",
         )
 
-    print(f"🔄 Starting camera with: {rtsp_url.replace(new_settings.password, '***')}")
+    logger.info("Starting camera with RTSP URL (password masked)")
     
     # Stop existing worker
     if cv_worker:
@@ -364,7 +370,7 @@ async def update_camera_settings(
             message="В режиме VPS приложение не подключается к камере. Видео воспроизводится с VPS (HLS/WebRTC).",
         )
 
-    print(f"🔄 Restarting camera with: {rtsp_url.replace(updated_settings.password, '***')}")
+    logger.info("Restarting camera with RTSP URL (password masked)")
     
     # Stop existing worker
     if cv_worker:
@@ -835,6 +841,7 @@ async def switch_camera(request: CameraSwitchRequest):
         request.source: 'webcam' for local webcam (0) or 'dahua' for IP camera
     """
     if getattr(settings, "stream_mode", "local") == "vps":
+        logger.info("Camera switch rejected: stream_mode=vps")
         return {"success": False, "message": "В режиме VPS переключение камеры недоступно. Видео идёт с VPS."}
     source = request.source
     global cv_worker
@@ -846,9 +853,10 @@ async def switch_camera(request: CameraSwitchRequest):
         elif source == "dahua":
             new_camera_index = settings.get_dahua_rtsp_url()
         else:
+            logger.warning("Unknown camera source: %s", source)
             return {"success": False, "message": f"Неизвестный источник: {source}"}
         
-        print(f"🔄 Switching camera to: {source} ({new_camera_index})")
+        logger.info("Switching camera to: %s", source)
         
         # Stop current worker
         if cv_worker:
@@ -872,14 +880,14 @@ async def switch_camera(request: CameraSwitchRequest):
         
         # Check if camera is online
         if cv_worker.camera_status == "online":
-            print(f"✓ Camera switched to: {source}")
+            logger.info("Camera switched to: %s", source)
             return {
                 "success": True,
                 "message": f"Переключено на: {source}",
                 "camera_index": str(new_camera_index) if source == "dahua" else new_camera_index
             }
         else:
-            print(f"✗ Failed to switch to: {source}")
+            logger.warning("Failed to switch camera to: %s (camera_status=%s)", source, cv_worker.camera_status)
             # Restore original camera on failure
             settings.camera_index = original_camera_index
             cv_worker.stop()
@@ -894,7 +902,7 @@ async def switch_camera(request: CameraSwitchRequest):
             }
     
     except Exception as e:
-        print(f"✗ Error switching camera: {e}")
+        logger.exception("Error switching camera: %s", e)
         return {"success": False, "message": f"Ошибка: {str(e)}"}
 
 
@@ -995,7 +1003,7 @@ async def broadcast_stats_periodically():
         except asyncio.CancelledError:
             break
         except Exception as e:
-            print(f"Stats broadcast error: {e}")
+            logger.warning("Stats broadcast error: %s", e)
 
 
 # ============================================
@@ -1004,7 +1012,7 @@ async def broadcast_stats_periodically():
 
 async def generate_frames():
     """Generate video frames for MJPEG streaming."""
-    print("🎥 Video stream started")
+    logger.info("Video stream (MJPEG) started")
     frame_count = 0
     
     while True:
@@ -1016,12 +1024,12 @@ async def generate_frames():
             
             frame_count += 1
             if frame_count % 30 == 0:
-                print(f"📹 Streaming frame #{frame_count}")
+                logger.debug("Streaming frame #%s", frame_count)
             
             # Encode frame as JPEG
             ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
             if not ret:
-                print("❌ Failed to encode frame")
+                logger.warning("Failed to encode frame")
                 continue
             
             # Yield frame in multipart format
@@ -1033,7 +1041,7 @@ async def generate_frames():
             await asyncio.sleep(0.01)
             continue
         except Exception as e:
-            print(f"❌ Frame generation error: {e}")
+            logger.exception("Frame generation error: %s", e)
             await asyncio.sleep(0.1)
 
 
@@ -1041,6 +1049,7 @@ async def generate_frames():
 async def video_feed():
     """Video streaming endpoint. In vps mode, stream is served from VPS (HLS/WebRTC); this endpoint returns 404."""
     if getattr(settings, "stream_mode", "local") == "vps":
+        logger.debug("video_feed: returning 404 (VPS mode, use HLS/WebRTC URLs)")
         return JSONResponse(
             status_code=404,
             content={

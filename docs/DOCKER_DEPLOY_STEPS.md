@@ -83,7 +83,24 @@ docker compose -f docker-compose.full.yml ps
 
 ---
 
-## Шаг 5. Проверка
+## Шаг 5. Логи и отладка
+
+Логи бэкенда пишутся в stderr и видны в Docker:
+
+```bash
+docker compose -f docker-compose.full.yml logs -f backend
+```
+
+Уровень детализации задаётся в `.env`:
+- `PC_LOG_LEVEL=INFO` (по умолчанию) — старт/стоп, камера, режим VPS, ошибки
+- `PC_LOG_LEVEL=DEBUG` — дополнительно детали VPS health-check, кадры стрима и т.п.
+- `PC_LOG_LEVEL=WARNING` — только предупреждения и ошибки
+
+При ошибках смотри строки с `[ERROR]` и `[WARNING]` и полный traceback после `Exception`.
+
+---
+
+## Шаг 6. Проверка
 
 - **Backend:** `http://ТВОЙ_СЕРВЕР:8000/health` — в ответе будет `stream_mode` и при `vps` — `vps_status`.
 - **Stream config:** `http://ТВОЙ_СЕРВЕР:8000/api/stream/config` — режим и URL HLS/WebRTC.
@@ -102,6 +119,7 @@ docker compose -f docker-compose.full.yml ps
 | 2 | Настроить `.env` (обязательные + при VPS: `STREAM_MODE`, `VPS_HLS_URL`, `VPS_WEBRTC_URL`) |
 | 3 | `docker compose -f docker-compose.full.yml --env-file .env up -d --build` |
 | 4 | При VPS: на камере RTMP push на `rtmp://сервер:1935/dahua_push`, путь в .env тот же |
-| 5 | Проверить /health, /api/stream/config, админку и аналитику |
+| 5 | При необходимости задать `PC_LOG_LEVEL=DEBUG` в .env и смотреть `docker compose logs -f backend` |
+| 6 | Проверить /health, /api/stream/config, админку и аналитику |
 
 После этого изменения применены и выполняются в Docker.

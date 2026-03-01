@@ -11,8 +11,11 @@ from ultralytics import YOLO
 
 from app.config import settings
 from app.counter import LineCrossingCounter
+from app.logging_config import get_logger
 from app.schemas import CrossingEvent, CurrentStats
 from app.utils import Throttler
+
+logger = get_logger(__name__)
 
 
 
@@ -114,14 +117,14 @@ class CVWorker:
                 self.cap = cv2.VideoCapture(settings.camera_index)
             
             if not self.cap.isOpened():
-                print(f"❌ Failed to open camera {settings.camera_index}")
+                logger.error("Failed to open camera: %s", settings.camera_index)
                 self.camera_status = "offline"
                 return False
             
             # Get frame dimensions
             ret, frame = self.cap.read()
             if not ret:
-                print("❌ Failed to read from camera")
+                logger.error("Failed to read from camera")
                 self.camera_status = "offline"
                 return False
             
@@ -133,12 +136,12 @@ class CVWorker:
                 self.frame_width = settings.resize_width
                 self.frame_height = int(self.frame_width * aspect_ratio)
             
-            print(f"✓ Camera initialized: {self.frame_width}x{self.frame_height}")
+            logger.info("Camera initialized: %sx%s", self.frame_width, self.frame_height)
             self.camera_status = "online"
             return True
             
         except Exception as e:
-            print(f"❌ Camera initialization error: {e}")
+            logger.exception("Camera initialization error: %s", e)
             self.camera_status = "offline"
             return False
     
@@ -150,14 +153,14 @@ class CVWorker:
             True if successful, False otherwise
         """
         try:
-            print(f"Loading YOLO model: {settings.model_name}...")
+            logger.info("Loading YOLO model: %s", settings.model_name)
             self.model = YOLO(settings.model_name)
             self.model_loaded = True
-            print("✓ Model loaded successfully")
+            logger.info("Model loaded successfully")
             return True
             
         except Exception as e:
-            print(f"❌ Model loading error: {e}")
+            logger.exception("Model loading error: %s", e)
             self.model_loaded = False
             return False
     
@@ -172,7 +175,7 @@ class CVWorker:
             direction_in=settings.direction_in
         )
         
-        print(f"✓ Counter initialized: line-crossing mode (line_x={line_x}, direction={settings.direction_in})")
+        logger.info("Counter initialized: line_x=%s direction=%s", line_x, settings.direction_in)
     
     def _process_frame(self, frame: np.ndarray) -> np.ndarray:
         """
@@ -226,7 +229,7 @@ class CVWorker:
                     try:
                         self.event_callback(event)
                     except Exception as e:
-                        print(f"⚠️  Event callback error: {e}")
+                        logger.warning("Event callback error: %s", e)
                 
                 # Determine color based on crossing event
                 if crossing_direction:
@@ -398,11 +401,11 @@ class CVWorker:
         key = cv2.waitKey(1) & 0xFF
         
         if key == ord('q'):
-            print("Quit requested")
+            logger.info("Quit requested")
             return False
         
         elif key == ord('r'):
-            print("Resetting counters...")
+            logger.info("Resetting counters...")
             self.counter.reset_counts()
         
         elif key == ord('a'):
@@ -410,14 +413,14 @@ class CVWorker:
             if self.counter and self.counter.line_x:
                 new_x = max(10, self.counter.line_x - 10)
                 self.counter.update_line_position(new_x)
-                print(f"Line moved to x={new_x}")
+                logger.debug("Line moved to x=%s", new_x)
         
         elif key == ord('d'):
             # Move line right
             if self.counter and self.counter.line_x:
                 new_x = min(self.frame_width - 10, self.counter.line_x + 10)
                 self.counter.update_line_position(new_x)
-                print(f"Line moved to x={new_x}")
+                logger.debug("Line moved to x=%s", new_x)
         
         return True
     
@@ -433,18 +436,20 @@ class CVWorker:
     
     def _run(self):
         """Main worker loop."""
-        print("🚀 CV Worker starting...")
+        logger.info("CV Worker starting...")
         
         # Initialize components
         if not self._init_camera():
+            logger.warning("CV Worker exiting: camera init failed")
             return
         
         if not self._init_model():
+            logger.warning("CV Worker exiting: model init failed")
             return
         
         self._init_counter()
         
-        print("✓ CV Worker ready")
+        logger.info("CV Worker ready")
         
         # Main processing loop
         while self.running and not self.stop_event.is_set():
@@ -452,7 +457,7 @@ class CVWorker:
                 ret, frame = self.cap.read()
                 
                 if not ret:
-                    print("⚠️  Failed to read frame")
+                    logger.warning("Failed to read frame from camera")
                     self.camera_status = "offline"
                     time.sleep(0.1)
                     continue
@@ -470,7 +475,7 @@ class CVWorker:
                     try:
                         self.frame_callback(display_frame.copy())
                     except Exception as e:
-                        pass  # Ignore streaming errors
+                        logger.debug("Frame callback error: %s", e)
                 
                 # Show debug window if enabled
                 if settings.show_debug_window:
@@ -482,12 +487,10 @@ class CVWorker:
                 self._update_fps()
                 
             except Exception as e:
-                print(f"❌ Processing error: {e}")
-                import traceback
-                traceback.print_exc()
+                logger.exception("Processing error: %s", e)
                 time.sleep(0.1)
         
-        print("CV Worker stopped")
+        logger.info("CV Worker stopped")
         self._release_resources()
     
     def get_status(self) -> CurrentStats:

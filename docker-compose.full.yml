@@ -68,6 +68,8 @@ services:
       VPS_HLS_URL: ${VPS_HLS_URL:-}
       VPS_WEBRTC_URL: ${VPS_WEBRTC_URL:-}
       STREAM_PREFERRED_PROTOCOL: ${STREAM_PREFERRED_PROTOCOL:-webrtc}
+      PC_LOG_LEVEL: ${PC_LOG_LEVEL:-INFO}
+      LOG_LEVEL: ${LOG_LEVEL:-}
     depends_on:
       postgres:
         condition: service_healthy

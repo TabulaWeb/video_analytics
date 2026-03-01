@@ -7,7 +7,10 @@ from datetime import datetime, timezone
 from typing import Optional, Tuple
 
 from app.config import settings
+from app.logging_config import get_logger
 from app.schemas import VpsStreamStatus
+
+logger = get_logger(__name__)
 
 
 # Exponential backoff (seconds)
@@ -38,13 +41,16 @@ async def check_hls_url(url: Optional[str]) -> bool:
         loop = asyncio.get_event_loop()
         status, ct, body = await loop.run_in_executor(None, lambda: _http_get(url))
         if status != 200:
+            logger.warning("VPS HLS check failed: url=%s status=%s", url, status)
             return False
         ct_lower = (ct or "").lower()
         text = (body or b"").decode("utf-8", errors="ignore").strip()
         if "mpegurl" in ct_lower or "m3u8" in ct_lower or text.startswith("#EXTM3U"):
             return True
+        logger.warning("VPS HLS check: url=%s response is not m3u8", url)
         return False
-    except Exception:
+    except Exception as e:
+        logger.warning("VPS HLS check error: url=%s error=%s", url, e)
         return False
 
 
@@ -57,8 +63,12 @@ async def check_webrtc_url(url: Optional[str]) -> bool:
         status, _, _ = await loop.run_in_executor(None, lambda: _http_get(url))
         return status in (200, 404)
     except urllib.error.HTTPError as e:
-        return e.code in (200, 404)
-    except Exception:
+        ok = e.code in (200, 404)
+        if not ok:
+            logger.warning("VPS WebRTC check failed: url=%s code=%s", url, e.code)
+        return ok
+    except Exception as e:
+        logger.warning("VPS WebRTC check error: url=%s error=%s", url, e)
         return False
 
 
@@ -70,6 +80,7 @@ async def get_vps_status() -> VpsStreamStatus:
     webrtc_url = getattr(settings, "vps_webrtc_url", None) or None
 
     if not hls_url and not webrtc_url:
+        logger.debug("VPS status: no HLS/WebRTC URLs configured")
         return VpsStreamStatus(
             status="offline",
             hls_ok=False,
@@ -81,15 +92,17 @@ async def get_vps_status() -> VpsStreamStatus:
     try:
         hls_ok = await check_hls_url(hls_url)
         webrtc_ok = await check_webrtc_url(webrtc_url)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("VPS status check error: %s", e)
 
     if hls_ok or webrtc_ok:
         reset_backoff()
         status = "live"
+        logger.debug("VPS status: live (hls_ok=%s webrtc_ok=%s)", hls_ok, webrtc_ok)
     else:
         increase_backoff()
         status = "offline"
+        logger.warning("VPS status: offline (hls_ok=%s webrtc_ok=%s)", hls_ok, webrtc_ok)
 
     _cached_status = VpsStreamStatus(
         status=status,
