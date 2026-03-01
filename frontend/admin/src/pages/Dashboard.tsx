@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link as RouterLink } from 'react-router-dom';
 import {
   Box,
@@ -50,24 +50,69 @@ export default function Dashboard() {
   const [stats, setStats] = useState<Stats | null>(null);
   const toast = useToast();
 
+  const dashboardReceivedRef = useRef(false);
+
+  // Fallback: один раз REST, если по WebSocket не пришёл dashboard
+  const fetchDataFallback = async () => {
+    try {
+      const [statusData, statsData] = await Promise.all([
+        systemAPI.getStatus(),
+        systemAPI.getCurrentStats(),
+      ]);
+      setSystemStatus(statusData);
+      setStats(statsData);
+    } catch (error) {
+      console.error('Failed to fetch dashboard data:', error);
+    }
+  };
+
+  // WebSocket: dashboard (system_status + stats) приходит при подключении и каждые ~5 сек
   useEffect(() => {
-    const fetchData = async () => {
+    const base = API_BASE_URL || (typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname}:8000` : 'http://localhost:8000');
+    const wsUrl = (base.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://').replace(/\/$/, '')) + '/ws';
+    let ws: WebSocket | null = null;
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+    let connectTimeout: ReturnType<typeof setTimeout> | null = null;
+    let unmounted = false;
+
+    const connect = () => {
+      if (unmounted) return;
       try {
-        const [statusData, statsData] = await Promise.all([
-          systemAPI.getStatus(),
-          systemAPI.getCurrentStats(),
-        ]);
-        setSystemStatus(statusData);
-        setStats(statsData);
-      } catch (error) {
-        console.error('Failed to fetch data:', error);
-      }
+        ws = new WebSocket(wsUrl);
+        ws.onmessage = (event) => {
+          if (unmounted) return;
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'dashboard' && msg.data) {
+              dashboardReceivedRef.current = true;
+              if (fallbackTimer) {
+                clearTimeout(fallbackTimer);
+                fallbackTimer = null;
+              }
+              setSystemStatus(msg.data.system_status ?? null);
+              setStats(msg.data.stats ?? null);
+            }
+          } catch (_) {}
+        };
+        ws.onerror = () => {};
+        ws.onclose = () => {
+          if (!unmounted) setTimeout(connect, 5000);
+        };
+      } catch (_) {}
     };
 
-    fetchData();
-    const interval = setInterval(fetchData, 2000);
+    connectTimeout = setTimeout(connect, 150);
 
-    return () => clearInterval(interval);
+    fallbackTimer = setTimeout(() => {
+      if (!unmounted && !dashboardReceivedRef.current) fetchDataFallback();
+    }, 8000);
+
+    return () => {
+      unmounted = true;
+      if (connectTimeout) clearTimeout(connectTimeout);
+      if (fallbackTimer) clearTimeout(fallbackTimer);
+      if (ws) ws.close();
+    };
   }, []);
 
   const handleLogout = () => {

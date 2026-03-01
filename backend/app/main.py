@@ -181,9 +181,10 @@ async def lifespan(app: FastAPI):
     
     # In local mode, CV worker is started from Admin Panel after camera settings are configured
     
-    # Start background tasks: stats every 2s, analytics snapshot every 30s (for analytics page via WS)
+    # Start background tasks: stats every 2s, analytics every 30s, dashboard every 5s (admin via WS)
     stats_task = asyncio.create_task(broadcast_stats_periodically())
     analytics_task = asyncio.create_task(broadcast_analytics_periodically())
+    dashboard_task = asyncio.create_task(broadcast_dashboard_periodically())
     
     yield
     
@@ -191,6 +192,7 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down...")
     stats_task.cancel()
     analytics_task.cancel()
+    dashboard_task.cancel()
     if cv_worker:
         cv_worker.stop()
     
@@ -1076,6 +1078,62 @@ async def broadcast_analytics_snapshot():
         db.close()
 
 
+async def build_dashboard_payload() -> dict:
+    """Build system_status + stats for admin dashboard (same as /api/system/status + /api/stats/current)."""
+    stream_mode = getattr(settings, "stream_mode", "local") or "local"
+    uptime = time.time() - app_start_time
+    if stream_mode == "vps":
+        vps = await vps_health.get_vps_status()
+        system_status = {
+            "camera_online": vps.status == "live",
+            "fps": 0.0,
+            "active_tracks": 0,
+            "model_loaded": cv_worker.model_loaded if cv_worker else False,
+            "uptime_seconds": uptime,
+            "stream_mode": "vps",
+            "vps_status": vps.status,
+        }
+        cam_status = "online" if vps.status == "live" else ("initializing" if vps.status == "connecting" else "offline")
+        if cv_worker:
+            st = cv_worker.get_status()
+            stats = st.model_dump()
+            stats["camera_status"] = cam_status
+            system_status["fps"] = st.fps
+            system_status["active_tracks"] = st.active_tracks
+            system_status["model_loaded"] = st.model_loaded
+        else:
+            stats = {"camera_status": cam_status, "model_loaded": False, "fps": 0.0, "in_count": 0, "out_count": 0, "active_tracks": 0}
+    else:
+        if cv_worker:
+            st = cv_worker.get_status()
+            stats = st.model_dump()
+            system_status = {
+                "camera_online": st.camera_status == "online",
+                "fps": st.fps,
+                "active_tracks": st.active_tracks,
+                "model_loaded": st.model_loaded,
+                "uptime_seconds": uptime,
+                "stream_mode": "local",
+                "vps_status": None,
+            }
+        else:
+            system_status = {"camera_online": False, "fps": 0.0, "active_tracks": 0, "model_loaded": False, "uptime_seconds": uptime, "stream_mode": "local", "vps_status": None}
+            stats = {"camera_status": "offline", "model_loaded": False, "fps": 0.0, "in_count": 0, "out_count": 0, "active_tracks": 0}
+    return {"system_status": system_status, "stats": stats}
+
+
+async def broadcast_dashboard_snapshot():
+    """Build dashboard payload and broadcast to all WebSocket clients."""
+    if not active_connections:
+        return
+    try:
+        payload = await build_dashboard_payload()
+        message = WSMessage(type="dashboard", data=payload)
+        await broadcast_message(message.model_dump())
+    except Exception as e:
+        logger.warning("Dashboard broadcast error: %s", e)
+
+
 # ============================================
 # WebSocket Endpoints
 # ============================================
@@ -1102,6 +1160,12 @@ async def websocket_endpoint(websocket: WebSocket):
                 db.close()
         except Exception as e:
             logger.debug("Initial analytics snapshot error: %s", e)
+        # Send initial dashboard (system_status + stats) for admin page
+        try:
+            payload = await build_dashboard_payload()
+            await websocket.send_json(WSMessage(type="dashboard", data=payload).model_dump())
+        except Exception as e:
+            logger.debug("Initial dashboard snapshot error: %s", e)
         
         # Listen for messages (keep connection alive)
         while True:
@@ -1175,6 +1239,18 @@ async def broadcast_analytics_periodically():
             break
         except Exception as e:
             logger.warning("Analytics broadcast error: %s", e)
+
+
+async def broadcast_dashboard_periodically():
+    """Broadcast dashboard (system_status + stats) every 5s so admin page can use WS instead of polling."""
+    while True:
+        try:
+            await asyncio.sleep(5.0)
+            await broadcast_dashboard_snapshot()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning("Dashboard broadcast error: %s", e)
 
 
 # ============================================
