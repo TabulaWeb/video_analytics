@@ -1,0 +1,107 @@
+# Пошаговый деплой на сервер с Docker
+
+Как применить изменения (режим VPS, плеер HLS/WebRTC) и запустить стек в Docker.
+
+---
+
+## Шаг 1. Код на сервере
+
+На сервере перейди в каталог проекта и подтяни изменения:
+
+```bash
+cd /path/to/video_analytics   # или где у тебя лежит проект
+git pull
+```
+
+Если код копируешь вручную — убедись, что на сервере есть все обновлённые файлы (backend, frontend/admin, frontend/analytics, infra/mediamtx, docker-compose.full.yml).
+
+---
+
+## Шаг 2. Файл `.env`
+
+В корне проекта создай или отредактируй `.env` (можно скопировать из `.env.example`).
+
+**Обязательные переменные (как и раньше):**
+
+- `POSTGRES_PASSWORD`
+- `PC_DAHUA_PASSWORD` (если используешь камеру)
+- `VITE_API_URL` — публичный URL бэкенда (например `http://ТВОЙ_СЕРВЕР:8000` или `https://api.example.com`)
+
+**Если используешь режим VPS** — добавь или раскомментируй:
+
+```env
+STREAM_MODE=vps
+VPS_HLS_URL=http://ТВОЙ_СЕРВЕР:8888/dahua_push/index.m3u8
+VPS_WEBRTC_URL=http://ТВОЙ_СЕРВЕР:8889/dahua_push
+STREAM_PREFERRED_PROTOCOL=webrtc
+```
+
+Замени `ТВОЙ_СЕРВЕР` на IP или домен сервера, до которого из браузера достучишься (тот же хост, что и приложение, или отдельный VPS с MediaMTX). Путь `dahua_push` должен совпадать с путём в MediaMTX (см. шаг 4).
+
+Если оставляешь режим по умолчанию (камера через RTSP/MediaMTX) — ничего из VPS не добавляй, можно не задавать `STREAM_MODE` (будет `local`).
+
+---
+
+## Шаг 3. Сборка и запуск
+
+Из корня проекта:
+
+```bash
+docker compose -f docker-compose.full.yml --env-file .env up -d --build
+```
+
+Флаг `--build` пересоберёт образы backend, admin и analytics (там новые изменения). Postgres и MediaMTX подтянутся как образы без пересборки.
+
+Проверка, что контейнеры запущены:
+
+```bash
+docker compose -f docker-compose.full.yml ps
+```
+
+Должны быть в состоянии `running`: postgres, mediamtx, backend, admin, analytics.
+
+---
+
+## Шаг 4. Режим VPS: камера пушит RTMP на этот же сервер
+
+Если MediaMTX крутится в том же Docker и камера пушит RTMP на этот сервер:
+
+1. В `infra/mediamtx/mediamtx.yml` уже добавлен путь **`dahua_push`** без источника (приём RTMP).
+2. На камере Dahua укажи RTMP push:
+   - URL: `rtmp://IP_СЕРВЕРА:1935/dahua_push`
+   - Кодек: H.264.
+3. В `.env` (как в шаге 2):
+   - `VPS_HLS_URL=http://IP_СЕРВЕРА:8888/dahua_push/index.m3u8`
+   - `VPS_WEBRTC_URL=http://IP_СЕРВЕРА:8889/dahua_push`
+   - `STREAM_MODE=vps`
+4. Перезапусти только backend, чтобы подхватить env:
+   ```bash
+   docker compose -f docker-compose.full.yml --env-file .env up -d backend
+   ```
+
+Если камера пушит на **другой** VPS (отдельная машина с MediaMTX) — в `VPS_HLS_URL` и `VPS_WEBRTC_URL` укажи адрес того сервера и путь потока, который там настроен.
+
+---
+
+## Шаг 5. Проверка
+
+- **Backend:** `http://ТВОЙ_СЕРВЕР:8000/health` — в ответе будет `stream_mode` и при `vps` — `vps_status`.
+- **Stream config:** `http://ТВОЙ_СЕРВЕР:8000/api/stream/config` — режим и URL HLS/WebRTC.
+- **Админка:** `http://ТВОЙ_СЕРВЕР:3000` — логин, затем на дашборде должен быть плеер (local — MJPEG с бэка, vps — HLS/WebRTC с указанных URL).
+- **Аналитика:** `http://ТВОЙ_СЕРВЕР:3001` — тот же плеер по конфигу.
+
+Если в режиме VPS статус "offline" — проверь, что камера реально пушит на выбранный путь и что порты 8888/8889 доступны с той машины, откуда открываешь фронт (файрвол, CORS при необходимости).
+
+---
+
+## Краткий чеклист
+
+| Шаг | Действие |
+|-----|----------|
+| 1 | `git pull` (или скопировать обновлённый код) |
+| 2 | Настроить `.env` (обязательные + при VPS: `STREAM_MODE`, `VPS_HLS_URL`, `VPS_WEBRTC_URL`) |
+| 3 | `docker compose -f docker-compose.full.yml --env-file .env up -d --build` |
+| 4 | При VPS: на камере RTMP push на `rtmp://сервер:1935/dahua_push`, путь в .env тот же |
+| 5 | Проверить /health, /api/stream/config, админку и аналитику |
+
+После этого изменения применены и выполняются в Docker.

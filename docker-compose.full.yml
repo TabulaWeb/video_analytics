@@ -23,17 +23,18 @@ services:
       timeout: 5s
       retries: 5
 
-  # MediaMTX - RTSP to HLS proxy for IP camera
+  # MediaMTX - RTSP pull and/or RTMP ingest → HLS/WebRTC
   mediamtx:
     image: bluenviron/mediamtx:latest
     container_name: people-counter-mediamtx
     restart: unless-stopped
     ports:
-      - "8554:8554" # RTSP
-      - "8888:8888" # HLS
-      - "8889:8889/tcp" # WebRTC
-      - "8889:8889/udp" # WebRTC
-      - "9997:9997" # API
+      - "1935:1935" # RTMP (for camera push in VPS mode)
+      - "8554:8554"  # RTSP
+      - "8888:8888"  # HLS
+      - "8889:8889/tcp"  # WebRTC
+      - "8889:8889/udp"  # WebRTC
+      - "9997:9997"  # API
     volumes:
       - ./infra/mediamtx/mediamtx.yml:/mediamtx.yml:ro
     environment:
@@ -62,6 +63,11 @@ services:
       PC_DAHUA_PASSWORD: ${PC_DAHUA_PASSWORD}
       PC_DB_URL: postgresql://${POSTGRES_USER:-people_counter}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-people_counter_db}
       CORS_ORIGINS: ${CORS_ORIGINS:-}
+      # Stream mode: local (default) or vps (playback only from VPS HLS/WebRTC)
+      STREAM_MODE: ${STREAM_MODE:-local}
+      VPS_HLS_URL: ${VPS_HLS_URL:-}
+      VPS_WEBRTC_URL: ${VPS_WEBRTC_URL:-}
+      STREAM_PREFERRED_PROTOCOL: ${STREAM_PREFERRED_PROTOCOL:-webrtc}
     depends_on:
       postgres:
         condition: service_healthy

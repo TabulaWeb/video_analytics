@@ -79,3 +79,10 @@ paths:
     sourceOnDemand: yes
     sourceOnDemandStartTimeout: 10s
     sourceOnDemandCloseAfter: 10s
+
+  # VPS mode: camera pushes RTMP here (no source = ingest only).
+  # On camera set RTMP URL: rtmp://<server-ip>:1935/dahua_push
+  # Then set VPS_HLS_URL=http://<server>:8888/dahua_push/index.m3u8, VPS_WEBRTC_URL=http://<server>:8889/dahua_push
+  dahua_push:
+    # source not set = accept RTMP publish from camera
+    sourceOnDemand: no
