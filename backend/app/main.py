@@ -102,6 +102,7 @@ def on_crossing_event(event: CrossingEvent):
             session.commit()
             session.refresh(db_event)
             event.id = db_event.id
+            logger.info("Crossing event saved to PostgreSQL: id=%s direction=%s", db_event.id, event.direction)
         except Exception as e:
             logger.exception("Failed to save crossing event to PostgreSQL: %s", e)
             session.rollback()
