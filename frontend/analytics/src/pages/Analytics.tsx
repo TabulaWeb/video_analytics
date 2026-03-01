@@ -206,7 +206,7 @@ export default function Analytics() {
     } catch (error) {
       console.error('Failed to fetch data:', error);
     } finally {
-      if (showLoading) setIsLoading(false);
+      setIsLoading(false);
     }
   };
 
@@ -249,10 +249,6 @@ export default function Analytics() {
         };
         ws.onopen = () => {
           if (unmounted) return;
-          fallbackTimer = setTimeout(() => {
-            fallbackTimer = null;
-            if (!unmounted && !analyticsReceivedRef.current) fetchData(false);
-          }, 5000);
         };
         ws.onerror = () => {};
         ws.onclose = () => {
@@ -267,6 +263,12 @@ export default function Analytics() {
         if (!unmounted) setIsLoading(false);
       }
     };
+
+    // Fallback: если за 6 сек не пришло данных по WS (сокет не подключился или нет сообщения analytics) — один раз REST
+    fallbackTimer = setTimeout(() => {
+      fallbackTimer = null;
+      if (!unmounted && !analyticsReceivedRef.current) fetchData(false);
+    }, 6000);
 
     // Небольшая задержка, чтобы в React Strict Mode cleanup успел выполниться до открытия сокета
     connectTimeout = setTimeout(connect, 150);
