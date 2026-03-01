@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Box,
   Button,
@@ -132,60 +132,86 @@ export default function Analytics() {
   const [hasAnyData, setHasAnyData] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [streamMode, setStreamMode] = useState<'local' | 'vps'>('local');
+  const analyticsReceivedRef = useRef(false);
   const toast = useToast();
 
   useEffect(() => {
     streamAPI.getConfig().then((c: { stream_mode?: 'local' | 'vps' }) => setStreamMode(c?.stream_mode || 'local')).catch(() => {});
   }, []);
 
-  const fetchData = async () => {
+  const applyAnalyticsSnapshot = (data: Record<string, unknown>) => {
+    if (data.current) setCurrentStats(data.current as any);
+    if (data.day) setDayStats(data.day as any);
+    if (data.week) setWeekStats(data.week as any);
+    if (data.month) setMonthStats(data.month as any);
+    if (data.hourly) setHourlyStats(data.hourly as any);
+    if (data.daily_range) setDailyTrendStats(data.daily_range as any);
+    if (data.monthly_range) setMonthlyTrendStats(data.monthly_range as any);
+    if (data.peak_hour_avg) setPeakHourAvg(data.peak_hour_avg as any);
+    if (data.weekday_stats) setWeekdayStats(data.weekday_stats as any);
+    if (data.averages) setAverages(data.averages as any);
+    if (data.growth_trend) setGrowthTrend(data.growth_trend as any);
+    if (data.predict_peak) setPeakPrediction(data.predict_peak as any);
+    const day = data.day as any;
+    const week = data.week as any;
+    const month = data.month as any;
+    const hourly = (data.hourly as any[]) || [];
+    const dailyTrend = (data.daily_range as any[]) || [];
+    const monthlyTrend = (data.monthly_range as any[]) || [];
+    const hasData = (day?.total_events || 0) > 0 ||
+      (week?.total_events || 0) > 0 ||
+      (month?.total_events || 0) > 0 ||
+      hourly.some((h: any) => (h.in_count || 0) > 0 || (h.out_count || 0) > 0) ||
+      dailyTrend.some((d: any) => (d.IN || 0) > 0 || (d.OUT || 0) > 0) ||
+      monthlyTrend.some((m: any) => (m.IN || 0) > 0 || (m.OUT || 0) > 0);
+    setHasAnyData(hasData);
+  };
+
+  const fetchData = async (showLoading = true) => {
     try {
-      setIsLoading(true);
+      if (showLoading) setIsLoading(true);
       const [current, day, week, month, hourly, dailyTrend, monthlyTrend, peakHour, weekday, avg, trend, prediction] = await Promise.all([
-          statsAPI.getCurrent(),
-          statsAPI.getDay(),
-          statsAPI.getWeek(),
-          statsAPI.getMonth(),
-          statsAPI.getHourly(),
-          statsAPI.getDailyRange(),
-          statsAPI.getMonthlyRange(),
-          statsAPI.getPeakHourAvg(30),
-          statsAPI.getWeekdayStats(30),
-          statsAPI.getAverages(),
-          statsAPI.getGrowthTrend(),
-          statsAPI.getPredictPeak(30),
-        ]);
-        
-        setCurrentStats(current);
-        setDayStats(day);
-        setWeekStats(week);
-        setMonthStats(month);
-        setHourlyStats(hourly);
-        setDailyTrendStats(dailyTrend);
-        setMonthlyTrendStats(monthlyTrend);
-        setPeakHourAvg(peakHour);
-        setWeekdayStats(weekday);
-        setAverages(avg);
-        setGrowthTrend(trend);
-        setPeakPrediction(prediction);
-        
-        // Проверяем, есть ли хоть какие-то реальные данные
-        const hasData = (day?.total_events || 0) > 0 || 
-                        (week?.total_events || 0) > 0 || 
-                        (month?.total_events || 0) > 0 ||
-                        hourly.some(h => h.in_count > 0 || h.out_count > 0) ||
-                        dailyTrend.some(d => d.in_count > 0 || d.out_count > 0) ||
-                        monthlyTrend.some(m => m.in_count > 0 || m.out_count > 0);
-        setHasAnyData(hasData);
-      } catch (error) {
-        console.error('Failed to fetch data:', error);
-      } finally {
-        setIsLoading(false);
-      }
+        statsAPI.getCurrent(),
+        statsAPI.getDay(),
+        statsAPI.getWeek(),
+        statsAPI.getMonth(),
+        statsAPI.getHourly(),
+        statsAPI.getDailyRange(),
+        statsAPI.getMonthlyRange(),
+        statsAPI.getPeakHourAvg(30),
+        statsAPI.getWeekdayStats(30),
+        statsAPI.getAverages(),
+        statsAPI.getGrowthTrend(),
+        statsAPI.getPredictPeak(30),
+      ]);
+      setCurrentStats(current);
+      setDayStats(day);
+      setWeekStats(week);
+      setMonthStats(month);
+      setHourlyStats(hourly);
+      setDailyTrendStats(dailyTrend);
+      setMonthlyTrendStats(monthlyTrend);
+      setPeakHourAvg(peakHour);
+      setWeekdayStats(weekday);
+      setAverages(avg);
+      setGrowthTrend(trend);
+      setPeakPrediction(prediction);
+      const hasData = (day?.total_events || 0) > 0 ||
+        (week?.total_events || 0) > 0 ||
+        (month?.total_events || 0) > 0 ||
+        hourly.some((h: any) => h.in_count > 0 || h.out_count > 0) ||
+        dailyTrend.some((d: any) => (d.IN || d.in_count) > 0 || (d.OUT || d.out_count) > 0) ||
+        monthlyTrend.some((m: any) => (m.IN || m.in_count) > 0 || (m.OUT || m.out_count) > 0);
+      setHasAnyData(hasData);
+    } catch (error) {
+      console.error('Failed to fetch data:', error);
+    } finally {
+      if (showLoading) setIsLoading(false);
+    }
   };
 
   const handleRefresh = async () => {
-    await fetchData();
+    await fetchData(true);
     toast({
       title: 'Данные обновлены',
       status: 'success',
@@ -193,11 +219,51 @@ export default function Analytics() {
     });
   };
 
+  // WebSocket: данные аналитики приходят по сокету (при подключении и раз в 30 сек), без опроса REST
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 10000); // Increased to 10 seconds to reduce DB load
+    const wsUrl = (API_BASE_URL || '').replace(/^http/, 'ws').replace(/\/$/, '') + '/ws';
+    let ws: WebSocket | null = null;
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
-    return () => clearInterval(interval);
+    const connect = () => {
+      try {
+        ws = new WebSocket(wsUrl);
+        ws.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'analytics' && msg.data) {
+              analyticsReceivedRef.current = true;
+              if (fallbackTimer) {
+                clearTimeout(fallbackTimer);
+                fallbackTimer = null;
+              }
+              applyAnalyticsSnapshot(msg.data);
+              setIsLoading(false);
+            }
+          } catch (_) {}
+        };
+        ws.onopen = () => {
+          fallbackTimer = setTimeout(() => {
+            if (!analyticsReceivedRef.current) fetchData(false);
+            fallbackTimer = null;
+          }, 5000);
+        };
+        ws.onerror = () => {};
+        ws.onclose = () => {
+          ws = null;
+          if (fallbackTimer) clearTimeout(fallbackTimer);
+          setTimeout(connect, 5000);
+        };
+      } catch (_) {
+        setIsLoading(false);
+      }
+    };
+
+    connect();
+    return () => {
+      if (fallbackTimer) clearTimeout(fallbackTimer);
+      if (ws) ws.close();
+    };
   }, []);
 
   const handleExport = async (format: 'csv' | 'excel' | 'pdf') => {
@@ -367,7 +433,7 @@ export default function Analytics() {
           </Button>
           <Button
             as="a"
-            href="http://localhost:3000"
+            href={`${window.location.protocol}//${window.location.hostname}:3000`}
             target="_blank"
             rel="noopener noreferrer"
             variant="link"

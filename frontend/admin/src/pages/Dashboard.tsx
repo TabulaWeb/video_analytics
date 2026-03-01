@@ -195,7 +195,7 @@ export default function Dashboard() {
               </Button>
               <Button
                 colorScheme="blue"
-                onClick={() => window.open('http://localhost:3001', '_blank')}
+                onClick={() => window.open(`${window.location.protocol}//${window.location.hostname}:3001`, '_blank')}
               >
                 Открыть аналитику
               </Button>

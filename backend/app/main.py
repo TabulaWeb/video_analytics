@@ -181,14 +181,16 @@ async def lifespan(app: FastAPI):
     
     # In local mode, CV worker is started from Admin Panel after camera settings are configured
     
-    # Start background task to broadcast stats periodically
+    # Start background tasks: stats every 2s, analytics snapshot every 30s (for analytics page via WS)
     stats_task = asyncio.create_task(broadcast_stats_periodically())
+    analytics_task = asyncio.create_task(broadcast_analytics_periodically())
     
     yield
     
     # Shutdown
     logger.info("Shutting down...")
     stats_task.cancel()
+    analytics_task.cancel()
     if cv_worker:
         cv_worker.stop()
     
@@ -972,6 +974,109 @@ async def root():
 
 
 # ============================================
+# Analytics snapshot for WebSocket (single payload, no polling)
+# ============================================
+
+def build_analytics_snapshot(db: Session) -> dict:
+    """Build full analytics payload for frontend (day, week, month, hourly, etc.)."""
+    now = datetime.now()
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # Day
+    day_end = today_start + timedelta(days=1)
+    day_counts = crud.get_event_counts(db, today_start, day_end)
+    day_stats = {
+        "period": "day",
+        "start_date": today_start.isoformat(),
+        "end_date": day_end.isoformat(),
+        "in_count": day_counts["IN"],
+        "out_count": day_counts["OUT"],
+        "net_flow": day_counts["IN"] - day_counts["OUT"],
+        "total_events": day_counts["IN"] + day_counts["OUT"],
+    }
+    # Week
+    week_start = today_start - timedelta(days=now.weekday())
+    week_end = week_start + timedelta(days=7)
+    week_counts = crud.get_event_counts(db, week_start, week_end)
+    week_stats = {
+        "period": "week",
+        "start_date": week_start.isoformat(),
+        "end_date": week_end.isoformat(),
+        "in_count": week_counts["IN"],
+        "out_count": week_counts["OUT"],
+        "net_flow": week_counts["IN"] - week_counts["OUT"],
+        "total_events": week_counts["IN"] + week_counts["OUT"],
+    }
+    # Month
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    next_month = month_start.replace(month=month_start.month % 12 + 1, day=1) if month_start.month < 12 else month_start.replace(year=month_start.year + 1, month=1, day=1)
+    month_end = next_month - timedelta(seconds=1)
+    month_counts = crud.get_event_counts(db, month_start, month_end)
+    month_stats = {
+        "period": "month",
+        "start_date": month_start.isoformat(),
+        "end_date": month_end.isoformat(),
+        "in_count": month_counts["IN"],
+        "out_count": month_counts["OUT"],
+        "net_flow": month_counts["IN"] - month_counts["OUT"],
+        "total_events": month_counts["IN"] + month_counts["OUT"],
+    }
+    # Hourly (today)
+    hourly_raw = crud.get_hourly_stats(db, now)
+    hourly = [{"hour": h["hour"], "in_count": h["IN"], "out_count": h["OUT"]} for h in hourly_raw]
+    # Daily range (current month)
+    end_month = month_start + timedelta(days=32)
+    end_month = end_month.replace(day=1) - timedelta(seconds=1)
+    daily_range = crud.get_daily_stats(db, month_start, end_month)
+    # Monthly range (current year)
+    year_start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+    year_end = now.replace(month=12, day=31, hour=23, minute=59, second=59, microsecond=999999)
+    monthly_range = crud.get_monthly_stats(db, year_start, year_end)
+    # Peak hour avg, weekday, averages, growth, prediction (crud returns dicts)
+    peak_hour = crud.get_average_peak_hour(db, 30)
+    peak_hour_data = peak_hour if isinstance(peak_hour, dict) else None
+    weekday = crud.get_weekday_stats(db, 30)
+    weekday_data = list(weekday) if weekday else []
+    averages = crud.get_averages(db)
+    averages_data = averages if isinstance(averages, dict) else None
+    growth = crud.get_growth_trend(db)
+    growth_data = growth if isinstance(growth, dict) else None
+    prediction = crud.predict_peak_hour(db, 30)
+    prediction_data = prediction if isinstance(prediction, dict) else None
+    # Current stats
+    current = cv_worker.get_status() if cv_worker else CurrentStats(camera_status="offline", model_loaded=False, fps=0.0)
+    current_data = current.model_dump() if hasattr(current, "model_dump") else {"in_count": 0, "out_count": 0, "active_tracks": 0, "camera_status": "offline", "model_loaded": False, "fps": 0.0}
+    return {
+        "current": current_data,
+        "day": day_stats,
+        "week": week_stats,
+        "month": month_stats,
+        "hourly": hourly,
+        "daily_range": daily_range,
+        "monthly_range": monthly_range,
+        "peak_hour_avg": peak_hour_data,
+        "weekday_stats": weekday_data,
+        "averages": averages_data,
+        "growth_trend": growth_data,
+        "predict_peak": prediction_data,
+    }
+
+
+async def broadcast_analytics_snapshot():
+    """Build analytics snapshot and broadcast to all WebSocket clients."""
+    if not active_connections:
+        return
+    db = SessionLocal()
+    try:
+        payload = build_analytics_snapshot(db)
+        message = WSMessage(type="analytics", data=payload)
+        await broadcast_message(message.model_dump())
+    except Exception as e:
+        logger.warning("Analytics snapshot broadcast error: %s", e)
+    finally:
+        db.close()
+
+
+# ============================================
 # WebSocket Endpoints
 # ============================================
 
@@ -987,6 +1092,16 @@ async def websocket_endpoint(websocket: WebSocket):
             stats = cv_worker.get_status()
             message = WSMessage(type="stats", data=stats.model_dump())
             await websocket.send_json(message.model_dump())
+        # Send initial analytics snapshot so analytics page has data without polling
+        try:
+            db = SessionLocal()
+            try:
+                payload = build_analytics_snapshot(db)
+                await websocket.send_json(WSMessage(type="analytics", data=payload).model_dump())
+            finally:
+                db.close()
+        except Exception as e:
+            logger.debug("Initial analytics snapshot error: %s", e)
         
         # Listen for messages (keep connection alive)
         while True:
@@ -1040,16 +1155,26 @@ async def broadcast_stats_periodically():
     while True:
         try:
             await asyncio.sleep(2.0)
-            
             if cv_worker and active_connections:
                 stats = cv_worker.get_status()
                 message = WSMessage(type="stats", data=stats.model_dump())
                 await broadcast_message(message.model_dump())
-        
         except asyncio.CancelledError:
             break
         except Exception as e:
             logger.warning("Stats broadcast error: %s", e)
+
+
+async def broadcast_analytics_periodically():
+    """Broadcast full analytics snapshot every 30s so analytics page can use WS instead of polling."""
+    while True:
+        try:
+            await asyncio.sleep(30.0)
+            await broadcast_analytics_snapshot()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.warning("Analytics broadcast error: %s", e)
 
 
 # ============================================
