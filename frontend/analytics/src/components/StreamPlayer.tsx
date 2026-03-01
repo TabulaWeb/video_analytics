@@ -17,8 +17,9 @@ export interface VpsStatusType {
   webrtc_ok?: boolean;
 }
 
-const BACKOFF_INITIAL = 1000;
+const BACKOFF_INITIAL = 2000;   // при подключении / offline
 const BACKOFF_MAX = 30000;
+const LIVE_POLL_INTERVAL = 15000; // когда уже live — реже
 
 function useStreamConfig() {
   const [config, setConfig] = useState<StreamConfigType | null>(null);
@@ -39,7 +40,7 @@ function useVpsStatus(streamMode: 'local' | 'vps', enabled: boolean) {
         const s = await streamAPI.getVpsStatus();
         if (cancelled) return;
         setStatus(s);
-        if (s.status === 'live') backoffRef.current = BACKOFF_INITIAL;
+        if (s.status === 'live') backoffRef.current = LIVE_POLL_INTERVAL;
         else backoffRef.current = Math.min(backoffRef.current * 2, BACKOFF_MAX);
       } catch {
         if (cancelled) return;
