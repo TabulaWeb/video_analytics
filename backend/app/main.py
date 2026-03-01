@@ -90,6 +90,7 @@ def on_crossing_event(event: CrossingEvent):
     This runs in the CV worker thread. Writes to PostgreSQL when db_url is set,
     otherwise to legacy SQLite so analytics and API see the same data.
     """
+    logger.info("Crossing detected: direction=%s track_id=%s (saving to DB)", event.direction, event.track_id)
     if getattr(settings, "db_url", None) and settings.db_url and str(settings.db_url).startswith("postgresql://"):
         session = SessionLocal()
         try:
@@ -111,6 +112,7 @@ def on_crossing_event(event: CrossingEvent):
     else:
         event_id = db.insert_event(event)
         event.id = event_id
+        logger.info("Crossing event saved to SQLite: id=%s direction=%s", event_id, event.direction)
 
     # Queue for WebSocket broadcast
     try:
@@ -154,6 +156,8 @@ async def lifespan(app: FastAPI):
     global cv_worker
     stream_mode = getattr(settings, "stream_mode", "local") or "local"
     logger.info("Starting People Counter application (stream_mode=%s)", stream_mode)
+    _db_for_events = "PostgreSQL" if (getattr(settings, "db_url", None) and str(settings.db_url or "").startswith("postgresql://")) else "SQLite"
+    logger.info("Crossing events will be saved to: %s", _db_for_events)
     if stream_mode == "vps":
         logger.info("VPS mode: VPS_HLS_URL=%s, VPS_WEBRTC_URL=%s", bool(settings.vps_hls_url), bool(settings.vps_webrtc_url))
         # Start CV worker from HLS stream (optional) so we count line crossings from the same stream
