@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     vps_hls_url: Optional[str] = Field(None, validation_alias=AliasChoices("VPS_HLS_URL", "PC_VPS_HLS_URL"))
     vps_webrtc_url: Optional[str] = Field(None, validation_alias=AliasChoices("VPS_WEBRTC_URL", "PC_VPS_WEBRTC_URL"))
     stream_preferred_protocol: Literal["webrtc", "hls"] = Field("webrtc", validation_alias=AliasChoices("STREAM_PREFERRED_PROTOCOL", "PC_STREAM_PREFERRED_PROTOCOL"))
+    # Run line-counting from HLS in VPS mode. Set to false if backend OOMs or HLS is unreachable from server.
+    vps_analysis_enabled: bool = Field(True, validation_alias=AliasChoices("VPS_ANALYSIS_ENABLED", "PC_VPS_ANALYSIS_ENABLED"))
     
     # YOLO model settings
     model_name: str = "yolov8n.pt"  # yolov8n/s/m/l/x

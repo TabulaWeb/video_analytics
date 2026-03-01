@@ -137,16 +137,23 @@ async def lifespan(app: FastAPI):
     logger.info("Starting People Counter application (stream_mode=%s)", stream_mode)
     if stream_mode == "vps":
         logger.info("VPS mode: VPS_HLS_URL=%s, VPS_WEBRTC_URL=%s", bool(settings.vps_hls_url), bool(settings.vps_webrtc_url))
-        # Start CV worker from HLS stream so we count line crossings from the same stream the user watches
-        if getattr(settings, "vps_hls_url", None):
+        # Start CV worker from HLS stream (optional) so we count line crossings from the same stream
+        vps_analysis = getattr(settings, "vps_analysis_enabled", True)
+        if vps_analysis and getattr(settings, "vps_hls_url", None):
             global cv_worker
-            settings.camera_index = settings.vps_hls_url
-            cv_worker = CVWorker(
-                event_callback=on_crossing_event,
-                frame_callback=None,  # no MJPEG in VPS mode; stream is played from VPS
-            )
-            cv_worker.start()
-            logger.info("VPS analysis started: counting from HLS stream %s", settings.vps_hls_url[:60] + "..." if len(settings.vps_hls_url or "") > 60 else settings.vps_hls_url)
+            try:
+                settings.camera_index = settings.vps_hls_url
+                cv_worker = CVWorker(
+                    event_callback=on_crossing_event,
+                    frame_callback=None,
+                )
+                cv_worker.start()
+                logger.info("VPS analysis started: counting from HLS stream")
+            except Exception as e:
+                logger.exception("VPS analysis failed to start (server still up): %s", e)
+                cv_worker = None
+        elif stream_mode == "vps" and not vps_analysis:
+            logger.info("VPS analysis disabled (VPS_ANALYSIS_ENABLED=false)")
     else:
         logger.info("Camera will not start automatically - configure via Admin Panel")
     
