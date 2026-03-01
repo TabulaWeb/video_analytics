@@ -58,6 +58,8 @@ services:
       - ./backend:/app
       - ./data:/app/data
     environment:
+      # Ultralytics: writable config dir in container (avoids /root/.config warning)
+      YOLO_CONFIG_DIR: /tmp/Ultralytics
       PC_DAHUA_IP: mediamtx
       PC_DAHUA_PORT: "8554"
       PC_DAHUA_USERNAME: ${PC_DAHUA_USERNAME:-admin}
