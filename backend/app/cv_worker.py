@@ -455,42 +455,31 @@ class CVWorker:
             self.camera_status = "offline"
             return
 
-        while self.running and not self.stop_event.is_set():
-            try:
-                ret, frame = self.cap.read()
-                
-                if not ret:
-                    logger.warning("Failed to read frame from camera")
-                    self.camera_status = "offline"
+        try:
+            while self.running and not self.stop_event.is_set():
+                try:
+                    ret, frame = self.cap.read()
+                    if not ret:
+                        logger.warning("Failed to read frame from camera")
+                        self.camera_status = "offline"
+                        time.sleep(0.1)
+                        continue
+                    self.camera_status = "online"
+                    annotated_frame = self._process_frame(frame)
+                    display_frame = self._draw_ui_overlay(annotated_frame)
+                    if self.frame_callback:
+                        try:
+                            self.frame_callback(display_frame.copy())
+                        except Exception as e:
+                            logger.debug("Frame callback error: %s", e)
+                    if settings.show_debug_window and os.environ.get("DISPLAY"):
+                        cv2.imshow("People Counter", display_frame)
+                        if not self._handle_keyboard():
+                            break
+                    self._update_fps()
+                except Exception as e:
+                    logger.exception("Processing error: %s", e)
                     time.sleep(0.1)
-                    continue
-                
-                self.camera_status = "online"
-                
-                # Process frame
-                annotated_frame = self._process_frame(frame)
-                
-                # Draw UI overlay
-                display_frame = self._draw_ui_overlay(annotated_frame)
-                
-                # Send frame for web streaming
-                if self.frame_callback:
-                    try:
-                        self.frame_callback(display_frame.copy())
-                    except Exception as e:
-                        logger.debug("Frame callback error: %s", e)
-                
-                # Debug window only when DISPLAY is set (avoid Qt/xcb crash in Docker/headless)
-                if settings.show_debug_window and os.environ.get("DISPLAY"):
-                    cv2.imshow("People Counter", display_frame)
-                    if not self._handle_keyboard():
-                        break
-                
-                self._update_fps()
-                
-            except Exception as e:
-                logger.exception("Processing error: %s", e)
-                time.sleep(0.1)
         except Exception as e:
             logger.exception("CV Worker crashed (server stays up): %s", e)
         finally:
