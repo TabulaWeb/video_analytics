@@ -105,15 +105,18 @@ class CVWorker:
                 # For RTSP streams, use environment variables to force TCP transport
                 import os
                 os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;tcp'
-                
-                # Create VideoCapture with backend specification
                 self.cap = cv2.VideoCapture(settings.camera_index, cv2.CAP_FFMPEG)
-                
-                # Set buffer size to 1 for lower latency
+                if self.cap.isOpened():
+                    self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            elif isinstance(settings.camera_index, str) and (
+                settings.camera_index.startswith('http://') or settings.camera_index.startswith('https://')
+            ):
+                # HLS / HTTP stream (e.g. VPS HLS URL for line-counting from same stream as frontend)
+                self.cap = cv2.VideoCapture(settings.camera_index, cv2.CAP_FFMPEG)
                 if self.cap.isOpened():
                     self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             else:
-                # For webcams, use default
+                # Webcams, etc.
                 self.cap = cv2.VideoCapture(settings.camera_index)
             
             if not self.cap.isOpened():

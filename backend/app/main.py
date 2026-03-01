@@ -137,11 +137,20 @@ async def lifespan(app: FastAPI):
     logger.info("Starting People Counter application (stream_mode=%s)", stream_mode)
     if stream_mode == "vps":
         logger.info("VPS mode: VPS_HLS_URL=%s, VPS_WEBRTC_URL=%s", bool(settings.vps_hls_url), bool(settings.vps_webrtc_url))
+        # Start CV worker from HLS stream so we count line crossings from the same stream the user watches
+        if getattr(settings, "vps_hls_url", None):
+            global cv_worker
+            settings.camera_index = settings.vps_hls_url
+            cv_worker = CVWorker(
+                event_callback=on_crossing_event,
+                frame_callback=None,  # no MJPEG in VPS mode; stream is played from VPS
+            )
+            cv_worker.start()
+            logger.info("VPS analysis started: counting from HLS stream %s", settings.vps_hls_url[:60] + "..." if len(settings.vps_hls_url or "") > 60 else settings.vps_hls_url)
     else:
         logger.info("Camera will not start automatically - configure via Admin Panel")
     
-    # Do NOT start CV worker automatically
-    # It will be started from Admin Panel after camera settings are configured
+    # In local mode, CV worker is started from Admin Panel after camera settings are configured
     
     # Start background task to broadcast stats periodically
     stats_task = asyncio.create_task(broadcast_stats_periodically())
@@ -450,12 +459,22 @@ async def get_system_status():
 
 @app.get("/api/stats/current", response_model=CurrentStats)
 async def get_current_stats():
-    """Get current counter statistics. In vps mode, camera_status reflects VPS stream."""
+    """Get current counter statistics. In vps mode, camera_status reflects VPS stream; counts come from HLS analysis."""
     stream_mode = getattr(settings, "stream_mode", "local") or "local"
     if stream_mode == "vps":
         vps = await vps_health.get_vps_status()
         cam_status = "online" if vps.status == "live" else ("initializing" if vps.status == "connecting" else "offline")
-        return CurrentStats(camera_status=cam_status, model_loaded=False, fps=0.0)
+        if cv_worker:
+            stats = cv_worker.get_status()
+            return CurrentStats(
+                camera_status=cam_status,
+                model_loaded=stats.model_loaded,
+                fps=stats.fps,
+                in_count=stats.in_count,
+                out_count=stats.out_count,
+                active_tracks=stats.active_tracks,
+            )
+        return CurrentStats(camera_status=cam_status, model_loaded=False, fps=0.0, in_count=0, out_count=0, active_tracks=0)
     if cv_worker:
         return cv_worker.get_status()
     return CurrentStats(camera_status="offline", model_loaded=False, fps=0.0)
