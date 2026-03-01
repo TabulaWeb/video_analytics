@@ -133,6 +133,7 @@ def on_frame_ready(frame):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle: startup and shutdown."""
+    global cv_worker
     stream_mode = getattr(settings, "stream_mode", "local") or "local"
     logger.info("Starting People Counter application (stream_mode=%s)", stream_mode)
     if stream_mode == "vps":
@@ -140,7 +141,6 @@ async def lifespan(app: FastAPI):
         # Start CV worker from HLS stream (optional) so we count line crossings from the same stream
         vps_analysis = getattr(settings, "vps_analysis_enabled", True)
         if vps_analysis and getattr(settings, "vps_hls_url", None):
-            global cv_worker
             try:
                 settings.camera_index = settings.vps_hls_url
                 cv_worker = CVWorker(
@@ -167,8 +167,6 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down...")
     stats_task.cancel()
-    
-    global cv_worker
     if cv_worker:
         cv_worker.stop()
     
