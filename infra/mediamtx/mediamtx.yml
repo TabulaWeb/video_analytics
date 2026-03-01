@@ -41,10 +41,15 @@ hlsPartDuration: 200ms
 ###############################################
 # WebRTC server (optional, for lower latency)
 ###############################################
+# Если сервер в облаке (VPS), браузер должен подключаться по публичному IP.
+# Укажи публичный IP или домен сервера (через запятую несколько можно).
+webrtcAdditionalHosts: [45.144.222.57]
 
 webrtc: yes
 webrtcAddress: :8889
 webrtcAllowOrigin: "*"
+# Медиа (RTP) идёт по UDP 8189; при проблемах с UDP можно включить TCP fallback:
+# webrtcLocalTCPAddress: :8189
 
 ###############################################
 # Paths (camera streams)

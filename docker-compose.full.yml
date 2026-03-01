@@ -29,12 +29,13 @@ services:
     container_name: people-counter-mediamtx
     restart: unless-stopped
     ports:
-      - "1935:1935" # RTMP (for camera push in VPS mode)
-      - "8554:8554"  # RTSP
-      - "8888:8888"  # HLS
-      - "8889:8889/tcp"  # WebRTC
-      - "8889:8889/udp"  # WebRTC
-      - "9997:9997"  # API
+      - "1935:1935"   # RTMP (for camera push in VPS mode)
+      - "8554:8554"   # RTSP
+      - "8888:8888"   # HLS
+      - "8889:8889/tcp"   # WebRTC (WHEP/HTTP)
+      - "8889:8889/udp"   # WebRTC (signaling)
+      - "8189:8189/udp"   # WebRTC media (RTP) — без него картинка может не пойти
+      - "9997:9997"   # API
     volumes:
       - ./infra/mediamtx/mediamtx.yml:/mediamtx.yml:ro
     environment:
