@@ -27,24 +27,75 @@ import {
   Spinner,
   Center,
 } from '@chakra-ui/react';
-import { FaChartBar, FaSignOutAlt, FaDownload, FaChevronDown, FaChartLine, FaCalendarAlt, FaClock, FaExclamationCircle, FaCog } from 'react-icons/fa';
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-  LineChart,
-  Line,
-} from 'recharts';
+import { FaChartBar, FaSignOutAlt, FaDownload, FaChevronDown, FaChartLine, FaCalendarAlt, FaClock, FaExclamationCircle } from 'react-icons/fa';
+import 'chart.js/auto';
+import { type ChartOptions } from 'chart.js';
+import { Line, Bar } from 'react-chartjs-2';
 import { useAuth } from '../contexts/AuthContext';
 import { statsAPI, exportAPI, streamAPI } from '../services/api';
 import StreamPlayer from '../components/StreamPlayer';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
+const CHART_COLORS = {
+  in: 'rgb(72, 187, 120)',   // green.500
+  out: 'rgb(245, 101, 101)', // red.500
+  grid: 'rgba(0, 0, 0, 0.06)',
+};
+
+const barChartOptions: ChartOptions<'bar'> = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: { position: 'top' as const },
+    tooltip: {
+      backgroundColor: 'rgba(255,255,255,0.96)',
+      titleColor: '#1a202c',
+      bodyColor: '#4a5568',
+      borderColor: '#e2e8f0',
+      borderWidth: 1,
+      padding: 12,
+      displayColors: true,
+    },
+  },
+  scales: {
+    x: {
+      grid: { display: false },
+      ticks: { maxRotation: 45, minRotation: 45, font: { size: 11 } },
+    },
+    y: {
+      beginAtZero: true,
+      grid: { color: CHART_COLORS.grid },
+    },
+  },
+};
+
+const lineChartOptions: ChartOptions<'line'> = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: { position: 'top' as const },
+    tooltip: {
+      backgroundColor: 'rgba(255,255,255,0.96)',
+      titleColor: '#1a202c',
+      bodyColor: '#4a5568',
+      borderColor: '#e2e8f0',
+      borderWidth: 1,
+      padding: 12,
+      displayColors: true,
+    },
+  },
+  scales: {
+    x: {
+      grid: { display: false },
+      ticks: { maxRotation: 45, minRotation: 45, font: { size: 11 } },
+    },
+    y: {
+      beginAtZero: true,
+      grid: { color: CHART_COLORS.grid },
+    },
+  },
+};
 
 interface PeriodStats {
   period: string;
@@ -115,7 +166,7 @@ interface CurrentStats {
 }
 
 export default function Analytics() {
-  const { user, logout } = useAuth();
+  const { logout } = useAuth();
   const [currentStats, setCurrentStats] = useState<CurrentStats | null>(null);
   const [dayStats, setDayStats] = useState<PeriodStats | null>(null);
   const [weekStats, setWeekStats] = useState<PeriodStats | null>(null);
@@ -347,64 +398,46 @@ export default function Analytics() {
     };
   });
 
-  // Custom Tooltip for Hourly Chart - показывает дату и год
-  const HourlyTooltip = ({ active, payload }: any) => {
-    if (active && payload && payload.length) {
-      const now = new Date();
-      const monthNames = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
-      const dateStr = `${now.getDate()} ${monthNames[now.getMonth()]} ${now.getFullYear()}`;
-      
-      return (
-        <Box bg="white" p={3} border="1px" borderColor="gray.200" borderRadius="md" boxShadow="md">
-          <Text fontWeight="bold" mb={2}>{payload[0].payload.hour}</Text>
-          <Text fontSize="sm" color="gray.600" mb={2}>{dateStr}</Text>
-          {payload.map((entry: any, index: number) => (
-            <Text key={index} color={entry.color} fontSize="sm">
-              {entry.name}: {entry.value}
-            </Text>
-          ))}
-        </Box>
-      );
-    }
-    return null;
+  // Chart.js data: weekday bar
+  const weekdayChartData = {
+    labels: weekdayStats.map(w => w.weekday),
+    datasets: [
+      { label: 'Вошло', data: weekdayStats.map(w => w.IN), backgroundColor: CHART_COLORS.in, borderColor: CHART_COLORS.in, borderWidth: 1 },
+      { label: 'Вышло', data: weekdayStats.map(w => w.OUT), backgroundColor: CHART_COLORS.out, borderColor: CHART_COLORS.out, borderWidth: 1 },
+    ],
   };
 
-  // Custom Tooltip for Daily Chart - показывает месяц и год
-  const DailyTooltip = ({ active, payload }: any) => {
-    if (active && payload && payload.length) {
-      const fullDate = payload[0].payload.fullDate;
-      
-      return (
-        <Box bg="white" p={3} border="1px" borderColor="gray.200" borderRadius="md" boxShadow="md">
-          <Text fontWeight="bold" mb={2}>{fullDate}</Text>
-          {payload.map((entry: any, index: number) => (
-            <Text key={index} color={entry.color} fontSize="sm">
-              {entry.name}: {entry.value}
-            </Text>
-          ))}
-        </Box>
-      );
-    }
-    return null;
+  // Chart.js data: hourly (bar + line)
+  const hourlyChartJsData = {
+    labels: hourlyChartData.map(h => h.hour),
+    datasets: [
+      { label: 'Вошло', data: hourlyChartData.map(h => h['Вошло']), backgroundColor: CHART_COLORS.in, borderColor: CHART_COLORS.in, borderWidth: 2, tension: 0.35, fill: false },
+      { label: 'Вышло', data: hourlyChartData.map(h => h['Вышло']), backgroundColor: CHART_COLORS.out, borderColor: CHART_COLORS.out, borderWidth: 2, tension: 0.35, fill: false },
+    ],
   };
 
-  // Custom Tooltip for Monthly Chart - показывает месяц и год
-  const MonthlyTooltip = ({ active, payload }: any) => {
-    if (active && payload && payload.length) {
-      const fullMonth = payload[0].payload.fullMonth;
-      
-      return (
-        <Box bg="white" p={3} border="1px" borderColor="gray.200" borderRadius="md" boxShadow="md">
-          <Text fontWeight="bold" mb={2}>{fullMonth}</Text>
-          {payload.map((entry: any, index: number) => (
-            <Text key={index} color={entry.color} fontSize="sm">
-              {entry.name}: {entry.value}
-            </Text>
-          ))}
-        </Box>
-      );
-    }
-    return null;
+  // Chart.js data: daily trend line
+  const dailyChartJsData = {
+    labels: dailyTrendChartData.map(d => d.date),
+    datasets: [
+      { label: 'Вошло', data: dailyTrendChartData.map(d => d['Вошло']), borderColor: CHART_COLORS.in, backgroundColor: CHART_COLORS.in, borderWidth: 2, tension: 0.35, fill: false, pointRadius: 4, pointHoverRadius: 6 },
+      { label: 'Вышло', data: dailyTrendChartData.map(d => d['Вышло']), borderColor: CHART_COLORS.out, backgroundColor: CHART_COLORS.out, borderWidth: 2, tension: 0.35, fill: false, pointRadius: 4, pointHoverRadius: 6 },
+    ],
+  };
+
+  // Chart.js data: monthly trend line
+  const monthlyChartJsData = {
+    labels: monthlyTrendChartData.map(m => m.month),
+    datasets: [
+      { label: 'Вошло', data: monthlyTrendChartData.map(m => m['Вошло']), borderColor: CHART_COLORS.in, backgroundColor: CHART_COLORS.in, borderWidth: 2, tension: 0.35, fill: false, pointRadius: 4, pointHoverRadius: 6 },
+      { label: 'Вышло', data: monthlyTrendChartData.map(m => m['Вышло']), borderColor: CHART_COLORS.out, backgroundColor: CHART_COLORS.out, borderWidth: 2, tension: 0.35, fill: false, pointRadius: 4, pointHoverRadius: 6 },
+    ],
+  };
+
+  const hourlyTooltipTitle = () => {
+    const now = new Date();
+    const monthNames = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+    return `${now.getDate()} ${monthNames[now.getMonth()]} ${now.getFullYear()}`;
   };
 
   // Empty State для отдельного блока
@@ -715,17 +748,7 @@ export default function Analytics() {
           {weekdayStats.length > 0 ? (
             <Box overflowX={{ base: "auto", lg: "visible" }} w="100%">
               <Box minW={{ base: "800px", lg: "100%" }} h={{ base: "250px", md: "300px" }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={weekdayStats}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="weekday" angle={-45} textAnchor="end" height={80} />
-                    <YAxis />
-                    <Tooltip />
-                    <Legend />
-                    <Bar dataKey="IN" fill="#48BB78" name="Вошло" />
-                    <Bar dataKey="OUT" fill="#F56565" name="Вышло" />
-                  </BarChart>
-                </ResponsiveContainer>
+                <Bar data={weekdayChartData} options={barChartOptions} />
               </Box>
             </Box>
           ) : (
@@ -828,24 +851,7 @@ export default function Analytics() {
             <Heading size={{ base: "sm", md: "md" }} mb={{ base: 3, md: 4 }}>Дневная активность</Heading>
             <Box overflowX={{ base: "auto", lg: "visible" }} w="100%">
               <Box minW={{ base: "1200px", lg: "100%" }} h={{ base: "250px", md: "300px" }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={hourlyChartData} margin={{ top: 5, right: 30, left: 0, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis 
-                      dataKey="hour" 
-                      angle={-45}
-                      textAnchor="end"
-                      height={70}
-                      interval={0}
-                      tick={{ fontSize: 12 }}
-                    />
-                    <YAxis />
-                    <Tooltip />
-                    <Legend />
-                    <Bar dataKey="Вошло" fill="#48BB78" />
-                    <Bar dataKey="Вышло" fill="#F56565" />
-                  </BarChart>
-                </ResponsiveContainer>
+                <Bar data={hourlyChartJsData} options={barChartOptions} />
               </Box>
             </Box>
           </Box>
@@ -865,23 +871,7 @@ export default function Analytics() {
                 <TabPanel>
                   <Box overflowX={{ base: "auto", lg: "visible" }} w="100%">
                     <Box minW={{ base: "1200px", lg: "100%" }} h={{ base: "250px", md: "300px" }}>
-                      <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={hourlyChartData} margin={{ top: 5, right: 30, left: 0, bottom: 5 }}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis 
-                            dataKey="hour" 
-                            angle={-45} 
-                            textAnchor="end" 
-                            height={70}
-                            interval={0}
-                          />
-                          <YAxis />
-                          <Tooltip content={<HourlyTooltip />} />
-                          <Legend />
-                          <Line type="natural" dataKey="Вошло" stroke="#48BB78" strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} />
-                          <Line type="natural" dataKey="Вышло" stroke="#F56565" strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} />
-                        </LineChart>
-                      </ResponsiveContainer>
+                      <Line data={hourlyChartJsData} options={{ ...lineChartOptions, plugins: { ...lineChartOptions.plugins, tooltip: { ...lineChartOptions.plugins?.tooltip, callbacks: { title: () => hourlyTooltipTitle() } } } }} />
                     </Box>
                   </Box>
                   <Text mt={3} fontSize="sm" color="gray.600" textAlign="center">
@@ -893,24 +883,7 @@ export default function Analytics() {
                 <TabPanel>
                   <Box overflowX={{ base: "auto", lg: "visible" }} w="100%">
                     <Box minW={{ base: "1400px", lg: "100%" }} h={{ base: "250px", md: "300px" }}>
-                      <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={dailyTrendChartData} margin={{ top: 5, right: 30, left: 0, bottom: 5 }}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis 
-                            dataKey="date" 
-                            angle={-45}
-                            textAnchor="end"
-                            height={70}
-                            interval={0}
-                            tick={{ fontSize: 12 }}
-                          />
-                          <YAxis />
-                          <Tooltip content={<DailyTooltip />} />
-                          <Legend />
-                          <Line type="natural" dataKey="Вошло" stroke="#48BB78" strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} />
-                          <Line type="natural" dataKey="Вышло" stroke="#F56565" strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} />
-                        </LineChart>
-                      </ResponsiveContainer>
+                      <Line data={dailyChartJsData} options={{ ...lineChartOptions, plugins: { ...lineChartOptions.plugins, tooltip: { ...lineChartOptions.plugins?.tooltip, callbacks: { title: (items) => items.length && items[0].dataIndex != null ? dailyTrendChartData[items[0].dataIndex]?.fullDate ?? '' : '' } } } }} />
                     </Box>
                   </Box>
                   <Text mt={3} fontSize="sm" color="gray.600" textAlign="center">
@@ -922,23 +895,7 @@ export default function Analytics() {
                 <TabPanel>
                   <Box overflowX={{ base: "auto", lg: "visible" }} w="100%">
                     <Box minW={{ base: "1000px", lg: "100%" }} h={{ base: "250px", md: "300px" }}>
-                      <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={monthlyTrendChartData} margin={{ top: 5, right: 30, left: 0, bottom: 5 }}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis 
-                            dataKey="month" 
-                            angle={-45} 
-                            textAnchor="end" 
-                            height={80}
-                            interval={0}
-                          />
-                          <YAxis />
-                          <Tooltip content={<MonthlyTooltip />} />
-                          <Legend />
-                          <Line type="natural" dataKey="Вошло" stroke="#48BB78" strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} />
-                          <Line type="natural" dataKey="Вышло" stroke="#F56565" strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} />
-                        </LineChart>
-                      </ResponsiveContainer>
+                      <Line data={monthlyChartJsData} options={{ ...lineChartOptions, plugins: { ...lineChartOptions.plugins, tooltip: { ...lineChartOptions.plugins?.tooltip, callbacks: { title: (items) => items.length && items[0].dataIndex != null ? monthlyTrendChartData[items[0].dataIndex]?.fullMonth ?? '' : '' } } } }} />
                     </Box>
                   </Box>
                   <Text mt={3} fontSize="sm" color="gray.600" textAlign="center">

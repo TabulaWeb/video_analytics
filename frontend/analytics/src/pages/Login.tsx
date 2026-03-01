@@ -12,12 +12,11 @@ import {
   InputRightElement,
   IconButton,
   Stack,
-  Text,
   useToast,
   VStack,
   Icon,
 } from '@chakra-ui/react';
-import { FaChartBar, FaEye, FaEyeSlash } from 'react-icons/fa';
+import { FaEye, FaEyeSlash } from 'react-icons/fa';
 import { useAuth } from '../contexts/AuthContext';
 
 export default function Login() {

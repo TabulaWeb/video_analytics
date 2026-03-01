@@ -58,7 +58,7 @@ function useVpsStatus(streamMode: 'local' | 'vps', enabled: boolean) {
 function VpsPlayer({
   config,
   vpsStatus,
-  videoFeedUrl,
+  videoFeedUrl: _videoFeedUrl,
 }: {
   config: StreamConfigType;
   vpsStatus: VpsStatusType | null;
