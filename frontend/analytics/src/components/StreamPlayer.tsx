@@ -73,30 +73,28 @@ function VpsPlayer({
   const hlsUrl = (config.vps_hls_url || '').trim();
   const tryWebrtcFirst = preferred === 'webrtc' && webrtcUrl && !webrtcError;
 
-  // WebRTC WHEP
+  // WebRTC WHEP: client sends SDP offer via POST, server responds with 201 Created + SDP answer
   useEffect(() => {
     if (!tryWebrtcFirst || !videoRef.current || !webrtcUrl) return;
     const whepUrl = webrtcUrl.endsWith('/whep') ? webrtcUrl : webrtcUrl.replace(/\/?$/, '') + '/whep';
     let cancelled = false;
     (async () => {
       try {
-        const offerRes = await fetch(whepUrl, { method: 'GET', headers: { Accept: 'application/sdp' } });
-        if (!offerRes.ok || cancelled) throw new Error('WHEP offer failed');
-        const sdp = await offerRes.text();
         const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
         pcRef.current = pc;
         pc.ontrack = (e) => {
           if (videoRef.current && e.streams[0]) videoRef.current.srcObject = e.streams[0];
         };
-        await pc.setRemoteDescription({ type: 'offer', sdp });
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
         const postRes = await fetch(whepUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/sdp' },
           body: pc.localDescription?.sdp,
         });
-        if (!postRes.ok && postRes.status !== 204) throw new Error('WHEP answer failed');
+        if (!postRes.ok || cancelled) throw new Error(`WHEP failed: ${postRes.status}`);
+        const answerSdp = await postRes.text();
+        await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
       } catch (e) {
         if (!cancelled) setWebrtcError(true);
       }
