@@ -11,7 +11,6 @@ import {
   StatNumber,
   StatHelpText,
   VStack,
-  Image,
   Text,
   useToast,
   Icon,
@@ -42,7 +41,10 @@ import {
   Line,
 } from 'recharts';
 import { useAuth } from '../contexts/AuthContext';
-import { statsAPI, exportAPI } from '../services/api';
+import { statsAPI, exportAPI, streamAPI } from '../services/api';
+import StreamPlayer from '../components/StreamPlayer';
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 interface PeriodStats {
   period: string;
@@ -129,7 +131,12 @@ export default function Analytics() {
   const [isExporting, setIsExporting] = useState(false);
   const [hasAnyData, setHasAnyData] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [streamMode, setStreamMode] = useState<'local' | 'vps'>('local');
   const toast = useToast();
+
+  useEffect(() => {
+    streamAPI.getConfig().then((c: { stream_mode?: 'local' | 'vps' }) => setStreamMode(c?.stream_mode || 'local')).catch(() => {});
+  }, []);
 
   const fetchData = async () => {
     try {
@@ -725,14 +732,8 @@ export default function Analytics() {
               borderRadius="md"
               overflow="hidden"
             >
-              {currentStats?.camera_status === 'online' ? (
-                <Image
-                  src={`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/video_feed`}
-                  alt="Live camera feed"
-                  w="full"
-                  h="full"
-                  objectFit="contain"
-                />
+              {(streamMode === 'vps' || currentStats?.camera_status === 'online') ? (
+                <StreamPlayer apiBaseUrl={API_BASE_URL} />
               ) : (
                 <Flex h="full" align="center" justify="center">
                   <Text color="gray.500">Камера отключена</Text>

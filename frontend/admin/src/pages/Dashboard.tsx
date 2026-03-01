@@ -12,7 +12,6 @@ import {
   StatNumber,
   StatHelpText,
   VStack,
-  Image,
   Text,
   Badge,
   useToast,
@@ -22,6 +21,9 @@ import {
 import { FaCog, FaSignOutAlt, FaCircle, FaChartBar } from 'react-icons/fa';
 import { useAuth } from '../contexts/AuthContext';
 import { systemAPI } from '../services/api';
+import StreamPlayer from '../components/StreamPlayer';
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 interface SystemStatus {
   camera_online: boolean;
@@ -29,6 +31,8 @@ interface SystemStatus {
   active_tracks: number;
   model_loaded: boolean;
   uptime_seconds: number;
+  stream_mode?: 'local' | 'vps';
+  vps_status?: 'connecting' | 'live' | 'offline';
 }
 
 interface Stats {
@@ -171,18 +175,12 @@ export default function Dashboard() {
               borderRadius="md"
               overflow="hidden"
             >
-              {systemStatus?.camera_online ? (
-                <Image
-                  src={`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/video_feed`}
-                  alt="Live camera feed"
-                  w="full"
-                  h="full"
-                  objectFit="contain"
-                />
+              {(systemStatus?.stream_mode === 'vps' || systemStatus?.camera_online) ? (
+                <StreamPlayer apiBaseUrl={API_BASE_URL} />
               ) : (
                 <Flex h="full" align="center" justify="center" flexDirection="column" gap={4}>
                   <Text color="gray.500" fontSize="xl">📹 Камера отключена</Text>
-                  <Text color="gray.400" fontSize="sm">Настройте камеру в разделе "Настройки камеры"</Text>
+                  <Text color="gray.400" fontSize="sm">Настройте камеру в разделе &quot;Настройки камеры&quot;</Text>
                 </Flex>
               )}
             </Box>

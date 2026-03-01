@@ -111,6 +111,18 @@ export const statsAPI = {
   },
 };
 
+// Stream config (local MJPEG vs VPS HLS/WebRTC)
+export const streamAPI = {
+  getConfig: async () => {
+    const response = await api.get('/api/stream/config');
+    return response.data;
+  },
+  getVpsStatus: async () => {
+    const response = await api.get('/api/stream/vps-status');
+    return response.data;
+  },
+};
+
 // Export API
 export const exportAPI = {
   exportData: async (format: 'csv' | 'excel' | 'pdf', includeCharts = false, startDate?: string, endDate?: string) => {

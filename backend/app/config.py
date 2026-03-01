@@ -2,7 +2,7 @@
 import os
 from typing import Literal, Union, Optional
 from pydantic_settings import BaseSettings
-from pydantic import ConfigDict
+from pydantic import ConfigDict, Field, AliasChoices
 
 
 class Settings(BaseSettings):
@@ -16,19 +16,27 @@ class Settings(BaseSettings):
         extra="ignore"
     )
     
-    # Camera settings
+    # --- Stream mode: local (camera/RTSP) or vps (HLS/WebRTC from VPS) ---
+    stream_mode: Literal["local", "vps"] = Field(default="local", validation_alias=AliasChoices("STREAM_MODE", "PC_STREAM_MODE"))
+    
+    # Camera settings (used when stream_mode=local)
     # For webcam: use 0, 1, 2, etc.
     # For IP camera: use RTSP URL like "rtsp://user:pass@ip:port/path"
     camera_index: Union[int, str] = 0
     resize_width: int = 960  # Resize for performance, 0 = no resize
     
-    # Dahua IP Camera settings
+    # Dahua IP Camera settings (local mode; no hardcoded IP in code — can override via ENV)
     dahua_username: str = "admin"
     dahua_password: str = ""
     dahua_ip: str = "192.168.0.200"
     dahua_port: int = 554
     dahua_channel: int = 1
     dahua_subtype: int = 0  # 0=main stream (HD), 1=sub stream (SD)
+    
+    # VPS stream (used when stream_mode=vps). Camera pushes RTMP to VPS; we only consume HLS/WebRTC.
+    vps_hls_url: Optional[str] = Field(None, validation_alias=AliasChoices("VPS_HLS_URL", "PC_VPS_HLS_URL"))
+    vps_webrtc_url: Optional[str] = Field(None, validation_alias=AliasChoices("VPS_WEBRTC_URL", "PC_VPS_WEBRTC_URL"))
+    stream_preferred_protocol: Literal["webrtc", "hls"] = Field("webrtc", validation_alias=AliasChoices("STREAM_PREFERRED_PROTOCOL", "PC_STREAM_PREFERRED_PROTOCOL"))
     
     # YOLO model settings
     model_name: str = "yolov8n.pt"  # yolov8n/s/m/l/x

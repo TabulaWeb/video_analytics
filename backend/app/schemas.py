@@ -153,6 +153,25 @@ class SystemStatus(BaseModel):
     active_tracks: int
     model_loaded: bool
     uptime_seconds: float
+    stream_mode: Optional[Literal["local", "vps"]] = "local"
+    vps_status: Optional[Literal["connecting", "live", "offline"]] = None
+
+
+class StreamConfig(BaseModel):
+    """Stream configuration for frontend (local MJPEG vs VPS HLS/WebRTC)."""
+    stream_mode: Literal["local", "vps"]
+    preferred_protocol: Literal["webrtc", "hls"] = "webrtc"
+    video_feed_url: Optional[str] = None  # For local: backend MJPEG URL
+    vps_hls_url: Optional[str] = None
+    vps_webrtc_url: Optional[str] = None
+
+
+class VpsStreamStatus(BaseModel):
+    """VPS stream health status."""
+    status: Literal["connecting", "live", "offline"]
+    hls_ok: bool = False
+    webrtc_ok: bool = False
+    last_check_utc: Optional[str] = None
 
 
 # ============================================

@@ -165,6 +165,61 @@ PC_REID_MAX_PERSONS=100
 EOF
 ```
 
+## Stream modes: local and VPS
+
+The app supports two stream modes. No camera IP is hardcoded; configuration is via ENV and (in local mode) Admin Panel.
+
+### `STREAM_MODE=local` (default)
+
+- Backend connects to the camera (webcam index or RTSP URL from camera settings).
+- Video is served as MJPEG at `/video_feed`.
+- Admin Panel “Настройки камеры” configures the camera; the app uses that to build the RTSP URL.
+
+### `STREAM_MODE=vps` (RTMP push to VPS)
+
+- **The app does not connect to the camera.** The camera pushes RTMP to a VPS (e.g. MediaMTX). The app only consumes HLS and/or WebRTC from the VPS.
+- Playback in the browser: WebRTC (preferred, low latency) with HLS fallback (hls.js where needed).
+- Required ENV (see `.env.example`):
+
+| Variable | Description |
+|----------|-------------|
+| `STREAM_MODE` or `PC_STREAM_MODE` | `vps` |
+| `VPS_HLS_URL` or `PC_VPS_HLS_URL` | HLS playlist URL, e.g. `http://<vps>:8888/<path>/index.m3u8` |
+| `VPS_WEBRTC_URL` or `PC_VPS_WEBRTC_URL` | WebRTC (WHEP) base URL, e.g. `http://<vps>:8889/<path>` (app appends `/whep`) |
+| `STREAM_PREFERRED_PROTOCOL` or `PC_STREAM_PREFERRED_PROTOCOL` | `webrtc` or `hls` |
+
+Example for VPS mode:
+
+```bash
+STREAM_MODE=vps
+VPS_HLS_URL=http://your-vps:8888/dahua/index.m3u8
+VPS_WEBRTC_URL=http://your-vps:8889/dahua
+STREAM_PREFERRED_PROTOCOL=webrtc
+```
+
+- In VPS mode, `/video_feed` returns 404; the UI uses the VPS URLs above.
+- VPS stream status: **connecting / live / offline** (health-check with exponential backoff).
+
+### VPS mode debugging checklist
+
+1. **Camera pushes RTMP to VPS**
+   - On the camera (e.g. Dahua): set RTMP push URL to the VPS ingest (e.g. `rtmp://<vps>:1935/<path>`). Use H.264 (+ AAC if you need audio). Do not rely on H.265 for the VPS side.
+
+2. **Stream visible on VPS**
+   - On the VPS (e.g. MediaMTX): confirm the path appears in logs when the camera connects. Note the exact `<path>` (e.g. `dahua`).
+
+3. **URLs in the app**
+   - Set `VPS_HLS_URL` to the HLS playlist (e.g. `http://<vps>:8888/<path>/index.m3u8`).
+   - Set `VPS_WEBRTC_URL` to the WebRTC base (e.g. `http://<vps>:8889/<path>`). The app will call `<url>/whep` for WHEP.
+
+4. **CORS**
+   - If the frontend is on another origin, the VPS must allow that origin for the HLS/WebRTC URLs (or use a same-origin proxy).
+
+5. **Health and status**
+   - `GET /api/stream/vps-status` — VPS health (HLS playlist + WebRTC endpoint check).
+   - `GET /api/stream/config` — current stream mode and URLs (for the UI).
+   - In the UI, the stream badge shows **connecting** / **live** / **offline**.
+
 ## Debug Window Controls
 
 When `PC_SHOW_DEBUG_WINDOW=true`, an OpenCV window displays with keyboard controls:

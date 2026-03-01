@@ -63,6 +63,18 @@ export const systemAPI = {
   },
 };
 
+// Stream config (local MJPEG vs VPS HLS/WebRTC)
+export const streamAPI = {
+  getConfig: async () => {
+    const response = await api.get('/api/stream/config');
+    return response.data;
+  },
+  getVpsStatus: async () => {
+    const response = await api.get('/api/stream/vps-status');
+    return response.data;
+  },
+};
+
 // Events API
 export const eventsAPI = {
   getEvents: async (limit = 50) => {

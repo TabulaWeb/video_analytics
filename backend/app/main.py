@@ -24,10 +24,12 @@ from app.schemas import (
     CrossingEvent, CurrentStats, WSMessage, ResetResponse,
     Token, LoginRequest, CameraSettingsCreate, CameraSettingsResponse, CameraSettingsSaveResponse,
     PeriodStats, HourlyStats, PeakHour, ExportRequest, SystemStatus,
+    StreamConfig, VpsStreamStatus,
     PeakHourAnalytics, WeekdayStats, Averages, GrowthTrend, PeakPrediction
 )
 from app.db import db
 from app.cv_worker import CVWorker
+from app import vps_health
 from app.auth import authenticate_user, create_access_token, get_current_active_user, ACCESS_TOKEN_EXPIRE_MINUTES
 from app.models import get_db_engine, create_db_session, init_db, Event as DBEvent, CameraSettings as DBCameraSettings
 from app import crud
@@ -285,6 +287,14 @@ async def create_camera_settings(
     if new_settings.ip == "localhost" or new_settings.ip == "127.0.0.1":
         rtsp_url = f"rtsp://{new_settings.ip}:{new_settings.port}/dahua"
     
+    # In VPS mode we do not connect to camera; playback is from VPS only
+    if getattr(settings, "stream_mode", "local") == "vps":
+        return CameraSettingsSaveResponse(
+            **CameraSettingsResponse.model_validate(new_settings).model_dump(),
+            camera_connected=False,
+            message="В режиме VPS приложение не подключается к камере. Видео воспроизводится с VPS (HLS/WebRTC).",
+        )
+
     print(f"🔄 Starting camera with: {rtsp_url.replace(new_settings.password, '***')}")
     
     # Stop existing worker
@@ -346,6 +356,14 @@ async def update_camera_settings(
     if updated_settings.ip == "localhost" or updated_settings.ip == "127.0.0.1":
         rtsp_url = f"rtsp://{updated_settings.ip}:{updated_settings.port}/dahua"
     
+    # In VPS mode we do not connect to camera
+    if getattr(settings, "stream_mode", "local") == "vps":
+        return CameraSettingsSaveResponse(
+            **CameraSettingsResponse.model_validate(updated_settings).model_dump(),
+            camera_connected=False,
+            message="В режиме VPS приложение не подключается к камере. Видео воспроизводится с VPS (HLS/WebRTC).",
+        )
+
     print(f"🔄 Restarting camera with: {rtsp_url.replace(updated_settings.password, '***')}")
     
     # Stop existing worker
@@ -387,7 +405,21 @@ async def update_camera_settings(
 
 @app.get("/api/system/status", response_model=SystemStatus)
 async def get_system_status():
-    """Get system status."""
+    """Get system status. In vps mode, camera_online reflects VPS stream availability."""
+    stream_mode = getattr(settings, "stream_mode", "local") or "local"
+    uptime = time.time() - app_start_time
+
+    if stream_mode == "vps":
+        vps = await vps_health.get_vps_status()
+        return SystemStatus(
+            camera_online=(vps.status == "live"),
+            fps=0.0,
+            active_tracks=0,
+            model_loaded=False,
+            uptime_seconds=uptime,
+            stream_mode="vps",
+            vps_status=vps.status,
+        )
     if cv_worker:
         stats = cv_worker.get_status()
         return SystemStatus(
@@ -395,25 +427,58 @@ async def get_system_status():
             fps=stats.fps,
             active_tracks=stats.active_tracks,
             model_loaded=stats.model_loaded,
-            uptime_seconds=time.time() - app_start_time
+            uptime_seconds=uptime,
+            stream_mode="local",
+            vps_status=None,
         )
-    else:
-        return SystemStatus(
-            camera_online=False,
-            fps=0.0,
-            active_tracks=0,
-            model_loaded=False,
-            uptime_seconds=0.0
-        )
+    return SystemStatus(
+        camera_online=False,
+        fps=0.0,
+        active_tracks=0,
+        model_loaded=False,
+        uptime_seconds=uptime,
+        stream_mode="local",
+        vps_status=None,
+    )
 
 
 @app.get("/api/stats/current", response_model=CurrentStats)
 async def get_current_stats():
-    """Get current counter statistics."""
+    """Get current counter statistics. In vps mode, camera_status reflects VPS stream."""
+    stream_mode = getattr(settings, "stream_mode", "local") or "local"
+    if stream_mode == "vps":
+        vps = await vps_health.get_vps_status()
+        cam_status = "online" if vps.status == "live" else ("initializing" if vps.status == "connecting" else "offline")
+        return CurrentStats(camera_status=cam_status, model_loaded=False, fps=0.0)
     if cv_worker:
         return cv_worker.get_status()
-    else:
-        return CurrentStats(camera_status="offline", model_loaded=False, fps=0.0)
+    return CurrentStats(camera_status="offline", model_loaded=False, fps=0.0)
+
+
+# ============================================
+# Stream Config (local vs VPS)
+# ============================================
+
+@app.get("/api/stream/config", response_model=StreamConfig)
+async def get_stream_config(request: Request):
+    """Stream configuration for frontend: local MJPEG vs VPS HLS/WebRTC."""
+    base_url = str(request.base_url).rstrip("/")
+    stream_mode = getattr(settings, "stream_mode", "local") or "local"
+    preferred = getattr(settings, "stream_preferred_protocol", "webrtc") or "webrtc"
+    video_feed_url = f"{base_url}/video_feed" if stream_mode == "local" else None
+    return StreamConfig(
+        stream_mode=stream_mode,
+        preferred_protocol=preferred,
+        video_feed_url=video_feed_url,
+        vps_hls_url=getattr(settings, "vps_hls_url", None) or None,
+        vps_webrtc_url=getattr(settings, "vps_webrtc_url", None) or None,
+    )
+
+
+@app.get("/api/stream/vps-status", response_model=VpsStreamStatus)
+async def get_vps_stream_status():
+    """VPS stream health: connecting / live / offline. Uses exponential backoff on failure."""
+    return await vps_health.get_vps_status()
 
 
 # ============================================
@@ -769,6 +834,8 @@ async def switch_camera(request: CameraSwitchRequest):
     Args:
         request.source: 'webcam' for local webcam (0) or 'dahua' for IP camera
     """
+    if getattr(settings, "stream_mode", "local") == "vps":
+        return {"success": False, "message": "В режиме VPS переключение камеры недоступно. Видео идёт с VPS."}
     source = request.source
     global cv_worker
     
@@ -972,7 +1039,14 @@ async def generate_frames():
 
 @app.get("/video_feed")
 async def video_feed():
-    """Video streaming endpoint."""
+    """Video streaming endpoint. In vps mode, stream is served from VPS (HLS/WebRTC); this endpoint returns 404."""
+    if getattr(settings, "stream_mode", "local") == "vps":
+        return JSONResponse(
+            status_code=404,
+            content={
+                "detail": "In VPS mode video is played from VPS (HLS/WebRTC). Use /api/stream/config for URLs.",
+            },
+        )
     return StreamingResponse(
         generate_frames(),
         media_type="multipart/x-mixed-replace; boundary=frame"
@@ -986,11 +1060,20 @@ async def video_feed():
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
+    stream_mode = getattr(settings, "stream_mode", "local") or "local"
+    if stream_mode == "vps":
+        vps = await vps_health.get_vps_status()
+        return {
+            "status": "healthy",
+            "stream_mode": "vps",
+            "vps_status": vps.status,
+            "uptime": time.time() - app_start_time,
+        }
     return {
         "status": "healthy",
         "camera": cv_worker.camera_status if cv_worker else "offline",
         "model_loaded": cv_worker.model_loaded if cv_worker else False,
-        "uptime": time.time() - app_start_time
+        "uptime": time.time() - app_start_time,
     }
 
 
