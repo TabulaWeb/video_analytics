@@ -131,7 +131,7 @@ class ExportRequest(BaseModel):
 
 class WSMessage(BaseModel):
     """WebSocket message format."""
-    type: Literal["stats", "event", "status"]
+    type: Literal["stats", "event", "status", "analytics", "dashboard"]
     data: dict
 
 
