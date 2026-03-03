@@ -71,6 +71,8 @@ class CVWorker:
         self._diag_frame_count = 0
         self._diag_det_sum = 0
         self._diag_last_log_time: float = 0.0  # wall-clock for 30s log
+        self._diag_cx_min: Optional[float] = None
+        self._diag_cx_max: Optional[float] = None
         
         # Cleanup throttler
     
@@ -190,6 +192,8 @@ class CVWorker:
         )
         
         logger.info("Counter initialized: line_x=%s direction=%s", line_x, settings.direction_in)
+        if line_x == self.frame_width // 2 and (not settings.line_x):
+            logger.info("Tip: Line at center. If crossings are not counted, set line position in Admin (Camera settings) to where you cross, e.g. line_x=800 if person is on the right side of the frame.")
 
     def update_counter_config(
         self,
@@ -246,7 +250,12 @@ class CVWorker:
             
             for box, track_id, conf in zip(boxes, track_ids, confidences):
                 x1, y1, x2, y2 = box
-                
+                cx = (x1 + x2) / 2
+                if self._diag_cx_min is None:
+                    self._diag_cx_min, self._diag_cx_max = cx, cx
+                else:
+                    self._diag_cx_min = min(self._diag_cx_min, cx)
+                    self._diag_cx_max = max(self._diag_cx_max, cx)
                 # Check for crossing (pass frame for Re-ID)
                 crossing_direction = self.counter.process_detection(
                     track_id=track_id,
@@ -529,13 +538,22 @@ class CVWorker:
                     # Log every 150 frames (~5s at 30fps) or every 30s wall-clock (so we see activity even if FPS is low)
                     now_ts = time.time()
                     if self._diag_frame_count >= 150 or (now_ts - self._diag_last_log_time) >= 30:
+                        in_c, out_c = stats.get("in_count", 0), stats.get("out_count", 0)
+                        at = stats.get("active_tracks", 0)
+                        tip = ""
+                        if at and in_c == 0 and out_c == 0 and self._diag_cx_min is not None and self._diag_cx_max is not None:
+                            line_x = self.counter.line_x if self.counter else 0
+                            if (self._diag_cx_min > line_x + 5 and self._diag_cx_max > line_x + 5) or (self._diag_cx_min < line_x - 5 and self._diag_cx_max < line_x - 5):
+                                suggest = int((self._diag_cx_min + self._diag_cx_max) / 2)
+                                tip = " — set line_x=%s in Admin to count crossings" % suggest
                         logger.info(
-                            "VPS analysis: frames=%s detections_in_period=%s active_tracks=%s IN=%s OUT=%s",
-                            self._diag_frame_count, self._diag_det_sum,
-                            stats.get("active_tracks", 0), stats.get("in_count", 0), stats.get("out_count", 0)
+                            "VPS analysis: frames=%s detections_in_period=%s active_tracks=%s IN=%s OUT=%s%s",
+                            self._diag_frame_count, self._diag_det_sum, at, in_c, out_c, tip
                         )
                         self._diag_frame_count = 0
                         self._diag_det_sum = 0
+                        self._diag_cx_min = None
+                        self._diag_cx_max = None
                         self._diag_last_log_time = now_ts
                     display_frame = self._draw_ui_overlay(annotated_frame)
                     if self.frame_callback:

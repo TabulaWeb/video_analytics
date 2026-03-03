@@ -195,7 +195,10 @@ async def lifespan(app: FastAPI):
                                 cv_worker.update_counter_config(
                                     line_x=settings.line_x, direction_in=settings.direction_in, hysteresis_px=settings.hysteresis_px
                                 )
-                            logger.info("VPS counter config from DB: line_x=%s direction_in=%s", settings.line_x, settings.direction_in)
+                            if cam.line_x is not None:
+                                logger.info("VPS counter config from DB: line_x=%s direction_in=%s", settings.line_x, settings.direction_in)
+                            else:
+                                logger.info("VPS counter config from DB: direction_in=%s (line at center — set line_x in Admin if person is on one side)", settings.direction_in)
                     finally:
                         db_session.close()
                 except Exception as db_e:
