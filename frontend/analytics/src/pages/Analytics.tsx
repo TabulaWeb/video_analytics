@@ -183,6 +183,7 @@ export default function Analytics() {
   const [hasAnyData, setHasAnyData] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [streamMode, setStreamMode] = useState<'local' | 'vps'>('local');
+  const [overlay, setOverlay] = useState<{ frame_width: number; frame_height: number; line_x: number; direction_in: string; boxes: number[][] } | null>(null);
   const analyticsReceivedRef = useRef(false);
   const toast = useToast();
 
@@ -295,6 +296,9 @@ export default function Analytics() {
               }
               applyAnalyticsSnapshot(msg.data);
               setIsLoading(false);
+            }
+            if (msg.type === 'overlay' && msg.data && msg.data.frame_width != null) {
+              setOverlay(msg.data);
             }
           } catch (_) {}
         };
@@ -837,7 +841,7 @@ export default function Analytics() {
               overflow="hidden"
             >
               {(streamMode === 'vps' || currentStats?.camera_status === 'online') ? (
-                <StreamPlayer apiBaseUrl={API_BASE_URL} />
+                <StreamPlayer apiBaseUrl={API_BASE_URL} overlay={overlay} />
               ) : (
                 <Flex h="full" align="center" justify="center">
                   <Text color="gray.500">Камера отключена</Text>
