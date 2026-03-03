@@ -1,7 +1,7 @@
 """Pydantic schemas for API and WebSocket messages."""
 from datetime import datetime
 from typing import Literal, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ============================================
@@ -34,6 +34,7 @@ class CameraSettingsCreate(BaseModel):
     subtype: int = 0
     line_x: Optional[int] = None
     direction_in: Literal["L->R", "R->L"] = "L->R"
+    hysteresis_px: int = 5  # How far past line (px) to count crossing; larger = less sensitive
 
 
 class CameraSettingsResponse(BaseModel):
@@ -46,10 +47,16 @@ class CameraSettingsResponse(BaseModel):
     subtype: int
     line_x: Optional[int]
     direction_in: str
+    hysteresis_px: int = 5
     is_active: bool
     created_at: datetime
     updated_at: datetime
-    
+
+    @field_validator("hysteresis_px", mode="before")
+    @classmethod
+    def hysteresis_default(cls, v):
+        return v if v is not None else 5
+
     class Config:
         from_attributes = True
 
@@ -131,7 +138,7 @@ class ExportRequest(BaseModel):
 
 class WSMessage(BaseModel):
     """WebSocket message format."""
-    type: Literal["stats", "event", "status", "analytics", "dashboard"]
+    type: Literal["stats", "event", "status", "analytics", "dashboard", "overlay"]
     data: dict
 
 

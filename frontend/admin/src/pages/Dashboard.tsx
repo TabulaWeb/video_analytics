@@ -48,6 +48,7 @@ export default function Dashboard() {
   const { user, logout } = useAuth();
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
+  const [overlay, setOverlay] = useState<{ frame_width: number; frame_height: number; line_x: number; direction_in: string; boxes: number[][] } | null>(null);
   const toast = useToast();
 
   const dashboardReceivedRef = useRef(false);
@@ -91,6 +92,9 @@ export default function Dashboard() {
               }
               setSystemStatus(msg.data.system_status ?? null);
               setStats(msg.data.stats ?? null);
+            }
+            if (msg.type === 'overlay' && msg.data && msg.data.frame_width != null) {
+              setOverlay(msg.data);
             }
           } catch (_) {}
         };
@@ -221,7 +225,7 @@ export default function Dashboard() {
               overflow="hidden"
             >
               {(systemStatus?.stream_mode === 'vps' || systemStatus?.camera_online) ? (
-                <StreamPlayer apiBaseUrl={API_BASE_URL} />
+                <StreamPlayer apiBaseUrl={API_BASE_URL} overlay={overlay} />
               ) : (
                 <Flex h="full" align="center" justify="center" flexDirection="column" gap={4}>
                   <Text color="gray.500" fontSize="xl">📹 Камера отключена</Text>

@@ -36,6 +36,7 @@ interface CameraSettings {
   subtype: number;
   line_x: number | null;
   direction_in: 'L->R' | 'R->L';
+  hysteresis_px: number;
 }
 
 export default function CameraSettings() {
@@ -48,6 +49,7 @@ export default function CameraSettings() {
     subtype: 0,
     line_x: null,
     direction_in: 'L->R',
+    hysteresis_px: 5,
   });
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -63,6 +65,7 @@ export default function CameraSettings() {
         setSettings({
           ...data,
           password: '', // Password is not returned from server for security
+          hysteresis_px: data.hysteresis_px ?? 5,
         });
       } catch (error) {
         console.log('No existing settings, using defaults');
@@ -315,38 +318,54 @@ export default function CameraSettings() {
             <Divider />
 
             <Box>
-              <Heading size="md" mb={4}>Настройки линии подсчета</Heading>
+              <Heading size="md" mb={4}>Настройки линии подсчёта</Heading>
               <Text color="gray.600" mb={4}>
-                Настройте положение линии и направление подсчета
+                Линия пересечения и направление входа/выхода. Применяется к локальной камере и к анализу VPS.
               </Text>
             </Box>
 
             <FormControl>
-              <FormLabel>Позиция линии X (пиксели)</FormLabel>
+              <FormLabel>Позиция линии (X, пиксели)</FormLabel>
               <NumberInput
-                value={settings.line_x || ''}
-                onChange={(value) => setSettings({ ...settings, line_x: value ? parseInt(value) : null })}
+                value={settings.line_x ?? ''}
+                onChange={(_, valueAsNumber) => setSettings({ ...settings, line_x: Number.isNaN(valueAsNumber) ? null : valueAsNumber })}
                 min={0}
+                max={1920}
               >
                 <NumberInputField placeholder="Авто (центр кадра)" />
               </NumberInput>
-              <Text fontSize="sm" color="gray.500" mt={1}>
-                Оставьте пустым для автоматического центрирования
-              </Text>
+              <FormHelperText>
+                Горизонтальная координата вертикальной линии. Пусто = центр кадра. Обычно 0–960 при ширине 960.
+              </FormHelperText>
             </FormControl>
 
             <FormControl>
-              <FormLabel>Направление IN</FormLabel>
+              <FormLabel>Дальность срабатывания (пиксели)</FormLabel>
+              <NumberInput
+                value={settings.hysteresis_px}
+                onChange={(_, valueAsNumber) => setSettings({ ...settings, hysteresis_px: Number.isNaN(valueAsNumber) ? 5 : Math.max(1, Math.min(100, valueAsNumber)) })}
+                min={1}
+                max={100}
+              >
+                <NumberInputField />
+              </NumberInput>
+              <FormHelperText>
+                Насколько далеко за линию должен перейти центр человека, чтобы пересечение засчиталось. Больше = меньше ложных срабатываний, меньше = чувствительнее.
+              </FormHelperText>
+            </FormControl>
+
+            <FormControl>
+              <FormLabel>Направление входа</FormLabel>
               <Select
                 value={settings.direction_in}
                 onChange={(e) => setSettings({ ...settings, direction_in: e.target.value as 'L->R' | 'R->L' })}
               >
-                <option value="L->R">Слева направо (L→R)</option>
-                <option value="R->L">Справа налево (R→L)</option>
+                <option value="L->R">Слева направо (L→R) = вход</option>
+                <option value="R->L">Справа налево (R→L) = вход</option>
               </Select>
-              <Text fontSize="sm" color="gray.500" mt={1}>
-                Выберите направление, которое будет считаться "входом"
-              </Text>
+              <FormHelperText>
+                Какое направление пересечения считать «входом». Если считает только выход при вашем входе — выберите «Справа налево».
+              </FormHelperText>
             </FormControl>
 
             <Button

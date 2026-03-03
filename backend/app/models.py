@@ -28,6 +28,7 @@ class CameraSettings(Base):
     # Line settings
     line_x = Column(Integer, nullable=True)
     direction_in = Column(String, default="L->R")  # "L->R" or "R->L"
+    hysteresis_px = Column(Integer, default=5, nullable=True)  # How far past line to count (anti-jitter)
     
     # Active flag
     is_active = Column(Boolean, default=True)
@@ -100,3 +101,14 @@ def create_db_session(engine):
 def init_db(engine):
     """Initialize database tables."""
     Base.metadata.create_all(bind=engine)
+    # Add hysteresis_px to camera_settings if missing (existing DBs)
+    from sqlalchemy import text
+    try:
+        with engine.connect() as conn:
+            if engine.dialect.name == "postgresql":
+                conn.execute(text("ALTER TABLE camera_settings ADD COLUMN IF NOT EXISTS hysteresis_px INTEGER DEFAULT 5"))
+            else:
+                conn.execute(text("ALTER TABLE camera_settings ADD COLUMN hysteresis_px INTEGER DEFAULT 5"))
+            conn.commit()
+    except Exception:
+        pass  # Column already exists or table empty

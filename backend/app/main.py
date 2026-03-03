@@ -181,10 +181,11 @@ async def lifespan(app: FastAPI):
     
     # In local mode, CV worker is started from Admin Panel after camera settings are configured
     
-    # Start background tasks: stats every 2s, analytics every 30s, dashboard every 5s (admin via WS)
+    # Start background tasks: stats every 2s, analytics every 30s, dashboard every 5s, overlay ~2.5/s (VPS)
     stats_task = asyncio.create_task(broadcast_stats_periodically())
     analytics_task = asyncio.create_task(broadcast_analytics_periodically())
     dashboard_task = asyncio.create_task(broadcast_dashboard_periodically())
+    overlay_task = asyncio.create_task(broadcast_overlay_periodically())
     
     yield
     
@@ -193,6 +194,7 @@ async def lifespan(app: FastAPI):
     stats_task.cancel()
     analytics_task.cancel()
     dashboard_task.cancel()
+    overlay_task.cancel()
     if cv_worker:
         cv_worker.stop()
     
@@ -333,12 +335,18 @@ async def create_camera_settings(
     if new_settings.ip == "localhost" or new_settings.ip == "127.0.0.1":
         rtsp_url = f"rtsp://{new_settings.ip}:{new_settings.port}/dahua"
     
-    # In VPS mode we do not connect to camera; playback is from VPS only
+    # In VPS mode we do not connect to camera; apply line/direction/hysteresis to running analysis only
     if getattr(settings, "stream_mode", "local") == "vps":
+        if new_settings.line_x is not None:
+            settings.line_x = new_settings.line_x
+        settings.direction_in = new_settings.direction_in
+        settings.hysteresis_px = getattr(new_settings, "hysteresis_px", None) or settings.hysteresis_px
+        if cv_worker:
+            cv_worker.update_counter_config(line_x=settings.line_x, direction_in=settings.direction_in, hysteresis_px=settings.hysteresis_px)
         return CameraSettingsSaveResponse(
             **CameraSettingsResponse.model_validate(new_settings).model_dump(),
             camera_connected=False,
-            message="В режиме VPS приложение не подключается к камере. Видео воспроизводится с VPS (HLS/WebRTC).",
+            message="В режиме VPS приложение не подключается к камере. Видео воспроизводится с VPS (HLS/WebRTC). Настройки линии и направления применены к подсчёту.",
         )
 
     logger.info("Starting camera with RTSP URL (password masked)")
@@ -353,6 +361,8 @@ async def create_camera_settings(
     if new_settings.line_x:
         settings.line_x = new_settings.line_x
     settings.direction_in = new_settings.direction_in
+    if getattr(new_settings, "hysteresis_px", None) is not None:
+        settings.hysteresis_px = new_settings.hysteresis_px
     
     # Start new CV worker
     cv_worker = CVWorker(
@@ -402,12 +412,18 @@ async def update_camera_settings(
     if updated_settings.ip == "localhost" or updated_settings.ip == "127.0.0.1":
         rtsp_url = f"rtsp://{updated_settings.ip}:{updated_settings.port}/dahua"
     
-    # In VPS mode we do not connect to camera
+    # In VPS mode we do not connect to camera; apply line/direction/hysteresis to running analysis only
     if getattr(settings, "stream_mode", "local") == "vps":
+        if updated_settings.line_x is not None:
+            settings.line_x = updated_settings.line_x
+        settings.direction_in = updated_settings.direction_in
+        settings.hysteresis_px = getattr(updated_settings, "hysteresis_px", None) or settings.hysteresis_px
+        if cv_worker:
+            cv_worker.update_counter_config(line_x=settings.line_x, direction_in=settings.direction_in, hysteresis_px=settings.hysteresis_px)
         return CameraSettingsSaveResponse(
             **CameraSettingsResponse.model_validate(updated_settings).model_dump(),
             camera_connected=False,
-            message="В режиме VPS приложение не подключается к камере. Видео воспроизводится с VPS (HLS/WebRTC).",
+            message="В режиме VPS приложение не подключается к камере. Видео воспроизводится с VPS (HLS/WebRTC). Настройки линии и направления применены к подсчёту.",
         )
 
     logger.info("Restarting camera with RTSP URL (password masked)")
@@ -422,6 +438,8 @@ async def update_camera_settings(
     if updated_settings.line_x:
         settings.line_x = updated_settings.line_x
     settings.direction_in = updated_settings.direction_in
+    if getattr(updated_settings, "hysteresis_px", None) is not None:
+        settings.hysteresis_px = updated_settings.hysteresis_px
     
     # Start new CV worker
     cv_worker = CVWorker(
@@ -1134,6 +1152,20 @@ async def broadcast_dashboard_snapshot():
         logger.warning("Dashboard broadcast error: %s", e)
 
 
+async def broadcast_overlay_snapshot():
+    """Broadcast line + bboxes overlay for VPS stream (so frontend can draw on video)."""
+    if not active_connections or getattr(settings, "stream_mode", "local") != "vps" or not cv_worker:
+        return
+    try:
+        payload = cv_worker.get_overlay_data()
+        if not payload:
+            return
+        message = WSMessage(type="overlay", data=payload)
+        await broadcast_message(message.model_dump())
+    except Exception as e:
+        logger.debug("Overlay broadcast error: %s", e)
+
+
 # ============================================
 # WebSocket Endpoints
 # ============================================
@@ -1166,6 +1198,14 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.send_json(WSMessage(type="dashboard", data=payload).model_dump())
         except Exception as e:
             logger.debug("Initial dashboard snapshot error: %s", e)
+        # Send initial overlay (line + boxes) for VPS so admin can draw on stream
+        if getattr(settings, "stream_mode", "local") == "vps" and cv_worker:
+            try:
+                overlay_payload = cv_worker.get_overlay_data()
+                if overlay_payload:
+                    await websocket.send_json(WSMessage(type="overlay", data=overlay_payload).model_dump())
+            except Exception as e:
+                logger.debug("Initial overlay snapshot error: %s", e)
         
         # Listen for messages (keep connection alive)
         while True:
@@ -1251,6 +1291,18 @@ async def broadcast_dashboard_periodically():
             break
         except Exception as e:
             logger.warning("Dashboard broadcast error: %s", e)
+
+
+async def broadcast_overlay_periodically():
+    """Broadcast overlay (line + bboxes) for VPS stream so admin can draw on video (~2.5/s)."""
+    while True:
+        try:
+            await asyncio.sleep(0.4)
+            await broadcast_overlay_snapshot()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.debug("Overlay broadcast error: %s", e)
 
 
 # ============================================

@@ -62,6 +62,14 @@ class LineCrossingCounter:
     def update_line_position(self, new_x: int):
         """Update line position."""
         self.line_x = new_x
+
+    def update_direction_in(self, direction_in: Literal["L->R", "R->L"]):
+        """Update which direction counts as IN (e.g. switch if only OUT was counting)."""
+        self.direction_in = direction_in
+
+    def update_hysteresis(self, hysteresis_px: int):
+        """Update how far past the line (px) a person must cross to count. Larger = less sensitive."""
+        self.hysteresis_px = max(1, min(100, hysteresis_px))
     
     def _check_crossing(
         self,

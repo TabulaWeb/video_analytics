@@ -62,6 +62,9 @@ class CVWorker:
         self.last_fps_update = time.time()
         self.frame_count = 0
         
+        # Last overlay data for WebSocket (line + bboxes) - read from main thread
+        self._last_overlay_data: dict = {}
+        
         # Cleanup throttler
     
     def start(self):
@@ -180,6 +183,24 @@ class CVWorker:
         )
         
         logger.info("Counter initialized: line_x=%s direction=%s", line_x, settings.direction_in)
+
+    def update_counter_config(
+        self,
+        line_x: Optional[int] = None,
+        direction_in: Optional[str] = None,
+        hysteresis_px: Optional[int] = None,
+    ):
+        """Update line position, direction_in and/or hysteresis at runtime (e.g. from camera settings)."""
+        if not self.counter:
+            return
+        if line_x is not None:
+            self.counter.update_line_position(line_x)
+        if direction_in is not None and direction_in in ("L->R", "R->L"):
+            self.counter.update_direction_in(direction_in)
+            logger.info("Counter direction_in updated to %s", direction_in)
+        if hysteresis_px is not None:
+            self.counter.update_hysteresis(hysteresis_px)
+            logger.info("Counter hysteresis_px updated to %s", hysteresis_px)
     
     def _process_frame(self, frame: np.ndarray) -> np.ndarray:
         """
@@ -208,6 +229,7 @@ class CVWorker:
         
         # Process detections
         annotated_frame = frame.copy()
+        overlay_boxes: list = []
         
         if results and results[0].boxes is not None and results[0].boxes.id is not None:
             boxes = results[0].boxes.xyxy.cpu().numpy()
@@ -216,6 +238,7 @@ class CVWorker:
             
             for box, track_id, conf in zip(boxes, track_ids, confidences):
                 x1, y1, x2, y2 = box
+                overlay_boxes.append([float(x1), float(y1), float(x2), float(y2)])
                 
                 # Check for crossing (pass frame for Re-ID)
                 crossing_direction = self.counter.process_detection(
@@ -279,8 +302,21 @@ class CVWorker:
                     2
                 )
         
+        # Store overlay data for WebSocket (VPS frontend can draw line + boxes)
+        if self.counter:
+            self._last_overlay_data = {
+                "frame_width": self.frame_width,
+                "frame_height": self.frame_height,
+                "line_x": self.counter.line_x,
+                "direction_in": self.counter.direction_in,
+                "boxes": overlay_boxes,
+            }
         
         return annotated_frame
+    
+    def get_overlay_data(self) -> dict:
+        """Return last overlay data (line_x, boxes) for WebSocket. Safe to call from main thread."""
+        return dict(self._last_overlay_data) if self._last_overlay_data else {}
     
     def _draw_ui_overlay(self, frame: np.ndarray) -> np.ndarray:
         """Draw UI overlay with counters, line, and info."""
@@ -304,8 +340,9 @@ class CVWorker:
             arrow_size = 40
             
             # Left side indicator (depends on direction_in setting)
-            left_label = "IN" if settings.direction_in == "L->R" else "OUT"
-            left_color = (0, 255, 0) if settings.direction_in == "L->R" else (0, 0, 255)
+            dir_in = self.counter.direction_in
+            left_label = "IN" if dir_in == "L->R" else "OUT"
+            left_color = (0, 255, 0) if dir_in == "L->R" else (0, 0, 255)
             cv2.arrowedLine(
                 overlay,
                 (line_x - 60, arrow_y),
@@ -325,8 +362,8 @@ class CVWorker:
             )
             
             # Right side indicator
-            right_label = "OUT" if settings.direction_in == "L->R" else "IN"
-            right_color = (0, 0, 255) if settings.direction_in == "L->R" else (0, 255, 0)
+            right_label = "OUT" if dir_in == "L->R" else "IN"
+            right_color = (0, 0, 255) if dir_in == "L->R" else (0, 255, 0)
             cv2.arrowedLine(
                 overlay,
                 (line_x + 20, arrow_y),

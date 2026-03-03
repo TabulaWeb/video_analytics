@@ -55,17 +55,40 @@ function useVpsStatus(streamMode: 'local' | 'vps', enabled: boolean) {
   return status;
 }
 
+export interface OverlayData {
+  frame_width: number;
+  frame_height: number;
+  line_x: number;
+  direction_in: string;
+  boxes: number[][];
+}
+
 function VpsPlayer({
   config,
   vpsStatus,
   videoFeedUrl,
+  overlay,
 }: {
   config: StreamConfigType;
   vpsStatus: VpsStatusType | null;
   videoFeedUrl: string;
+  overlay: OverlayData | null;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [containerSize, setContainerSize] = useState({ w: 0, h: 0 });
   const preferred = config.preferred_protocol || 'webrtc';
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      setContainerSize({ w: el.clientWidth, h: el.clientHeight });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const [useHls, setUseHls] = useState(preferred === 'hls');
   const [webrtcError, setWebrtcError] = useState(false);
   const hlsRef = useRef<Hls | null>(null);
@@ -137,11 +160,49 @@ function VpsPlayer({
     if (webrtcError && hlsUrl) setUseHls(true);
   }, [webrtcError, hlsUrl]);
 
+  // Draw overlay (line + bboxes) on canvas when overlay data or container size changes
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!overlay || !canvas || !container || overlay.frame_width <= 0 || overlay.frame_height <= 0) return;
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    if (w <= 0 || h <= 0) return;
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const scaleX = w / overlay.frame_width;
+    const scaleY = h / overlay.frame_height;
+    ctx.clearRect(0, 0, w, h);
+    // Vertical line (cyan)
+    if (overlay.line_x != null) {
+      const lx = overlay.line_x * scaleX;
+      ctx.strokeStyle = '#00ffff';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
+      ctx.beginPath();
+      ctx.moveTo(lx, 0);
+      ctx.lineTo(lx, h);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    // Bounding boxes (orange)
+    ctx.strokeStyle = '#ffa500';
+    ctx.lineWidth = 2;
+    for (const box of overlay.boxes || []) {
+      if (box.length >= 4) {
+        const [x1, y1, x2, y2] = box;
+        ctx.strokeRect(x1 * scaleX, y1 * scaleY, (x2 - x1) * scaleX, (y2 - y1) * scaleY);
+      }
+    }
+  }, [overlay, containerSize]);
+
   const statusLabel = vpsStatus == null ? 'connecting' : (vpsStatus.status === 'live' ? 'live' : vpsStatus.status === 'connecting' ? 'connecting' : 'offline');
   const statusColor = statusLabel === 'live' ? 'green' : statusLabel === 'connecting' ? 'yellow' : 'red';
 
   return (
-    <Box position="relative" w="full" h="full">
+    <Box ref={containerRef} position="relative" w="full" h="full">
       <video
         ref={videoRef}
         autoPlay
@@ -149,6 +210,19 @@ function VpsPlayer({
         muted
         style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#000' }}
       />
+      {overlay && (
+        <canvas
+          ref={canvasRef}
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            pointerEvents: 'none',
+          }}
+        />
+      )}
       <Flex position="absolute" top={2} right={2} align="center" gap={2} bg="blackAlpha.7" px={2} py={1} borderRadius="md">
         <Box w={2} h={2} borderRadius="full" bg={`${statusColor}.400`} />
         <Text fontSize="xs" color="white">{statusLabel}</Text>
@@ -157,7 +231,7 @@ function VpsPlayer({
   );
 }
 
-export default function StreamPlayer({ apiBaseUrl }: { apiBaseUrl: string }) {
+export default function StreamPlayer({ apiBaseUrl, overlay = null }: { apiBaseUrl: string; overlay?: OverlayData | null }) {
   const config = useStreamConfig();
   const vpsStatus = useVpsStatus(config?.stream_mode || 'local', config?.stream_mode === 'vps');
 
@@ -181,6 +255,7 @@ export default function StreamPlayer({ apiBaseUrl }: { apiBaseUrl: string }) {
       config={config}
       vpsStatus={vpsStatus || { status: 'offline' }}
       videoFeedUrl={apiBaseUrl}
+      overlay={overlay}
     />
   );
 }
