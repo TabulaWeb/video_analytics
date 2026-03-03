@@ -179,6 +179,27 @@ async def lifespan(app: FastAPI):
                 )
                 cv_worker.start()
                 logger.info("VPS analysis started: counting from HLS stream")
+                # Apply saved camera settings (line_x, direction_in, hysteresis) from DB so line position matches admin
+                try:
+                    db_session = SessionLocal()
+                    try:
+                        cam = crud.get_camera_settings(db_session)
+                        if cam and (cam.line_x is not None or getattr(cam, "direction_in", None) or getattr(cam, "hysteresis_px", None)):
+                            if cam.line_x is not None:
+                                settings.line_x = cam.line_x
+                            if getattr(cam, "direction_in", None):
+                                settings.direction_in = cam.direction_in
+                            if getattr(cam, "hysteresis_px", None) is not None:
+                                settings.hysteresis_px = cam.hysteresis_px
+                            if cv_worker:
+                                cv_worker.update_counter_config(
+                                    line_x=settings.line_x, direction_in=settings.direction_in, hysteresis_px=settings.hysteresis_px
+                                )
+                            logger.info("VPS counter config from DB: line_x=%s direction_in=%s", settings.line_x, settings.direction_in)
+                    finally:
+                        db_session.close()
+                except Exception as db_e:
+                    logger.debug("Could not load camera settings from DB at startup: %s", db_e)
             except Exception as e:
                 logger.exception("VPS analysis failed to start (server still up): %s", e)
                 cv_worker = None
