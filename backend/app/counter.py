@@ -78,25 +78,20 @@ class LineCrossingCounter:
     ) -> Optional[Literal["IN", "OUT"]]:
         """
         Check if 50% of bbox (center point) crossed the line.
-        Counts EVERY crossing, no deduplication.
+        Counts as soon as center crosses the line; hysteresis only requires
+        that the previous position was clearly on one side (reduces jitter).
         
         Returns:
             "IN", "OUT", or None if no crossing
         """
-        # Check if center crossed from left to right
-        # Previous: center was on the left (last_cx < line_x)
-        # Current: center is on the right (cx > line_x + hysteresis)
-        if track.last_center_x < self.line_x and cx > self.line_x + self.hysteresis_px:
+        # Left to right: was clearly on the left, now center is on the right
+        if track.last_center_x <= self.line_x - self.hysteresis_px and cx > self.line_x:
             direction = "IN" if self.direction_in == "L->R" else "OUT"
             return direction
-        
-        # Check if center crossed from right to left
-        # Previous: center was on the right (last_cx > line_x)
-        # Current: center is on the left (cx < line_x - hysteresis)
-        if track.last_center_x > self.line_x and cx < self.line_x - self.hysteresis_px:
+        # Right to left: was clearly on the right, now center is on the left
+        if track.last_center_x >= self.line_x + self.hysteresis_px and cx < self.line_x:
             direction = "OUT" if self.direction_in == "L->R" else "IN"
             return direction
-        
         return None
     
     def process_detection(

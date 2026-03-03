@@ -4,6 +4,7 @@ import logging
 import os
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 
 from app.logging_config import setup_logging, get_logger
 
@@ -75,6 +76,9 @@ cv_worker: CVWorker = None
 # WebSocket connections
 active_connections: List[WebSocket] = []
 
+# Executor for non-blocking DB writes (so CV thread is not blocked)
+_db_executor: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="db_write")
+
 # Application start time
 app_start_time = time.time()
 
@@ -83,46 +87,47 @@ app_start_time = time.time()
 # Callbacks
 # ============================================
 
+def _save_crossing_to_db(event: CrossingEvent):
+    """Run in thread: save crossing event to DB. Does not block CV worker."""
+    try:
+        if getattr(settings, "db_url", None) and settings.db_url and str(settings.db_url).startswith("postgresql://"):
+            session = SessionLocal()
+            try:
+                db_event = DBEvent(
+                    timestamp=event.timestamp,
+                    track_id=event.track_id,
+                    direction=event.direction,
+                )
+                session.add(db_event)
+                session.commit()
+                session.refresh(db_event)
+                logger.info("Crossing event saved to PostgreSQL: id=%s direction=%s", db_event.id, event.direction)
+            except Exception as e:
+                logger.exception("Failed to save crossing event to PostgreSQL: %s", e)
+                session.rollback()
+            finally:
+                session.close()
+        else:
+            event_id = db.insert_event(event)
+            logger.info("Crossing event saved to SQLite: id=%s direction=%s", event_id, event.direction)
+    except Exception as e:
+        logger.exception("DB write error: %s", e)
+
+
 def on_crossing_event(event: CrossingEvent):
     """
     Callback for CV worker when a crossing event occurs.
-    
-    This runs in the CV worker thread. Writes to PostgreSQL when db_url is set,
-    otherwise to legacy SQLite so analytics and API see the same data.
+    Puts event in queue immediately for fast WebSocket broadcast; DB write runs in thread so CV is not blocked.
     """
-    logger.info("Crossing detected: direction=%s track_id=%s (saving to DB)", event.direction, event.track_id)
-    if getattr(settings, "db_url", None) and settings.db_url and str(settings.db_url).startswith("postgresql://"):
-        session = SessionLocal()
-        try:
-            db_event = DBEvent(
-                timestamp=event.timestamp,
-                track_id=event.track_id,
-                direction=event.direction,
-            )
-            session.add(db_event)
-            session.commit()
-            session.refresh(db_event)
-            event.id = db_event.id
-            logger.info("Crossing event saved to PostgreSQL: id=%s direction=%s", db_event.id, event.direction)
-        except Exception as e:
-            logger.exception("Failed to save crossing event to PostgreSQL: %s", e)
-            session.rollback()
-        finally:
-            session.close()
-    else:
-        event_id = db.insert_event(event)
-        event.id = event_id
-        logger.info("Crossing event saved to SQLite: id=%s direction=%s", event_id, event.direction)
-
-    # Queue for WebSocket broadcast
+    logger.info("Crossing detected: direction=%s track_id=%s", event.direction, event.track_id)
+    # Broadcast first: schedule put so UI updates as soon as the event loop runs
     try:
         loop = asyncio.get_event_loop()
-        asyncio.run_coroutine_threadsafe(
-            event_queue.put(("event", event)),
-            loop
-        )
+        asyncio.run_coroutine_threadsafe(event_queue.put(("event", event)), loop)
     except RuntimeError:
         pass
+    # DB write in background so we don't block the CV thread
+    _db_executor.submit(_save_crossing_to_db, event)
 
 
 def on_frame_ready(frame):
@@ -1214,21 +1219,16 @@ async def websocket_endpoint(websocket: WebSocket):
             except asyncio.TimeoutError:
                 pass
             
-            # Check for events in queue
-            try:
-                event_type, event_data = event_queue.get_nowait()
-                
-                if event_type == "event":
-                    message = WSMessage(
-                        type="event",
-                        data=event_data.model_dump()
-                    )
-                    await broadcast_message(message.model_dump())
-                
-            except asyncio.QueueEmpty:
-                pass
-            
-            await asyncio.sleep(0.01)
+            # Drain event queue so crossings are broadcast immediately
+            while True:
+                try:
+                    event_type, event_data = event_queue.get_nowait()
+                    if event_type == "event":
+                        message = WSMessage(type="event", data=event_data.model_dump())
+                        await broadcast_message(message.model_dump())
+                except asyncio.QueueEmpty:
+                    break
+            await asyncio.sleep(0.005)
     
     except WebSocketDisconnect:
         active_connections.remove(websocket)

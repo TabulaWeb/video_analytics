@@ -229,7 +229,6 @@ class CVWorker:
         
         # Process detections
         annotated_frame = frame.copy()
-        overlay_boxes: list = []
         
         if results and results[0].boxes is not None and results[0].boxes.id is not None:
             boxes = results[0].boxes.xyxy.cpu().numpy()
@@ -238,7 +237,6 @@ class CVWorker:
             
             for box, track_id, conf in zip(boxes, track_ids, confidences):
                 x1, y1, x2, y2 = box
-                overlay_boxes.append([float(x1), float(y1), float(x2), float(y2)])
                 
                 # Check for crossing (pass frame for Re-ID)
                 crossing_direction = self.counter.process_detection(
@@ -302,14 +300,13 @@ class CVWorker:
                     2
                 )
         
-        # Store overlay data for WebSocket (VPS frontend can draw line + boxes)
+        # Store overlay data for WebSocket (VPS frontend draws line only; boxes omitted for performance)
         if self.counter:
             self._last_overlay_data = {
                 "frame_width": self.frame_width,
                 "frame_height": self.frame_height,
                 "line_x": self.counter.line_x,
                 "direction_in": self.counter.direction_in,
-                "boxes": overlay_boxes,
             }
         
         return annotated_frame

@@ -187,15 +187,6 @@ function VpsPlayer({
       ctx.stroke();
       ctx.setLineDash([]);
     }
-    // Bounding boxes (orange)
-    ctx.strokeStyle = '#ffa500';
-    ctx.lineWidth = 2;
-    for (const box of overlay.boxes || []) {
-      if (box.length >= 4) {
-        const [x1, y1, x2, y2] = box;
-        ctx.strokeRect(x1 * scaleX, y1 * scaleY, (x2 - x1) * scaleX, (y2 - y1) * scaleY);
-      }
-    }
   }, [overlay, containerSize]);
 
   const statusLabel = vpsStatus == null ? 'connecting' : (vpsStatus.status === 'live' ? 'live' : vpsStatus.status === 'connecting' ? 'connecting' : 'offline');
