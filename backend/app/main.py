@@ -119,7 +119,10 @@ def on_crossing_event(event: CrossingEvent):
     Callback for CV worker when a crossing event occurs.
     Puts event in queue immediately for fast WebSocket broadcast; DB write runs in thread so CV is not blocked.
     """
-    logger.info("Crossing detected: direction=%s track_id=%s", event.direction, event.track_id)
+    logger.info(
+        "Crossing event (callback): direction=%s track_id=%s -> broadcast + DB save",
+        event.direction, event.track_id
+    )
     # Broadcast first: schedule put so UI updates as soon as the event loop runs
     try:
         loop = asyncio.get_event_loop()

@@ -5,6 +5,9 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from app.config import settings
+from app.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -142,6 +145,11 @@ class LineCrossingCounter:
                 self.in_count += 1
             else:
                 self.out_count += 1
+            logger.info(
+                "Line crossing: direction=%s track_id=%s line_x=%s position %.0f -> %.0f (total IN=%s OUT=%s)",
+                crossing_event, track_id, self.line_x, track.last_center_x, cx,
+                self.in_count, self.out_count
+            )
         
         track.update_position(cx, cy)
         return crossing_event
