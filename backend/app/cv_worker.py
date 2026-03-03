@@ -1,6 +1,9 @@
 """Computer Vision worker: camera capture, detection, tracking, and counting."""
 import os
 import cv2
+
+# Custom ByteTrack config with track_buffer=60 so IDs persist longer when person is briefly lost
+_TRACKER_CONFIG = os.path.join(os.path.dirname(__file__), "trackers", "bytetrack.yaml")
 import numpy as np
 import threading
 import time
@@ -220,7 +223,7 @@ class CVWorker:
         results = self.model.track(
             frame,
             persist=True,
-            tracker="bytetrack.yaml",
+            tracker=_TRACKER_CONFIG if os.path.isfile(_TRACKER_CONFIG) else "bytetrack.yaml",
             conf=settings.conf_threshold,
             iou=settings.iou_threshold,
             classes=[0],  # 0 = person in COCO dataset

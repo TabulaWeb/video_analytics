@@ -58,6 +58,10 @@ class LineCrossingCounter:
         self.tracks: Dict[int, TrackState] = {}
         self.in_count = 0
         self.out_count = 0
+        # Cooldown: don't count same track again for N process_detection calls (avoids double-count when lenient)
+        self._process_calls = 0
+        self._last_cross_at_call: Dict[int, int] = {}
+        self._cooldown_calls = 20
     
     def update_line_position(self, new_x: int):
         """Update line position."""
@@ -73,25 +77,23 @@ class LineCrossingCounter:
     
     def _check_crossing(
         self,
+        track_id: int,
         track: TrackState,
         cx: float
     ) -> Optional[Literal["IN", "OUT"]]:
         """
-        Check if 50% of bbox (center point) crossed the line.
-        Counts as soon as center crosses the line; hysteresis only requires
-        that the previous position was clearly on one side (reduces jitter).
-        
-        Returns:
-            "IN", "OUT", or None if no crossing
+        Check if center crossed the line. Uses a small margin (1–5 px) so crossings
+        are not missed at low FPS or with fast movement. Cooldown per track is
+        enforced in process_detection.
         """
-        # Left to right: was clearly on the left, now center is on the right
-        if track.last_center_x <= self.line_x - self.hysteresis_px and cx > self.line_x:
-            direction = "IN" if self.direction_in == "L->R" else "OUT"
-            return direction
-        # Right to left: was clearly on the right, now center is on the left
-        if track.last_center_x >= self.line_x + self.hysteresis_px and cx < self.line_x:
-            direction = "OUT" if self.direction_in == "L->R" else "IN"
-            return direction
+        # Small dead zone so we clearly crossed (not just wobble); cap so high hysteresis doesn't block
+        margin = max(1, min(5, self.hysteresis_px // 2))
+        # Left to right: was left of line, now right of line
+        if track.last_center_x <= self.line_x - margin and cx >= self.line_x + margin:
+            return "IN" if self.direction_in == "L->R" else "OUT"
+        # Right to left: was right of line, now left of line
+        if track.last_center_x >= self.line_x + margin and cx <= self.line_x - margin:
+            return "OUT" if self.direction_in == "L->R" else "IN"
         return None
     
     def process_detection(
@@ -115,7 +117,9 @@ class LineCrossingCounter:
         cx = (x1 + x2) / 2
         cy = (y1 + y2) / 2
         
-        # New track
+        self._process_calls += 1
+        
+        # New track: init and skip (need at least 2 frames with same ID to detect crossing)
         if track_id not in self.tracks:
             self.tracks[track_id] = TrackState(
                 track_id=track_id,
@@ -124,20 +128,22 @@ class LineCrossingCounter:
             )
             return None
         
-        # Existing track
         track = self.tracks[track_id]
-        crossing_event = self._check_crossing(track, cx)
+        # Cooldown: avoid double-count when person wobbles at the line
+        if self._process_calls - self._last_cross_at_call.get(track_id, -999) < self._cooldown_calls:
+            track.update_position(cx, cy)
+            return None
+        
+        crossing_event = self._check_crossing(track_id, track, cx)
         
         if crossing_event:
-            # Update counters
+            self._last_cross_at_call[track_id] = self._process_calls
             if crossing_event == "IN":
                 self.in_count += 1
             else:
                 self.out_count += 1
         
-        # Update track position
         track.update_position(cx, cy)
-        
         return crossing_event
     
     
