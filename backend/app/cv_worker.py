@@ -70,6 +70,7 @@ class CVWorker:
         # Diagnostic: periodic log (detections, tracks, in/out)
         self._diag_frame_count = 0
         self._diag_det_sum = 0
+        self._diag_last_log_time: float = 0.0  # wall-clock for 30s log
         
         # Cleanup throttler
     
@@ -500,6 +501,7 @@ class CVWorker:
                 logger.warning("CV Worker exiting: model init failed")
                 return
             self._init_counter()
+            self._diag_last_log_time = time.time()
             logger.info("CV Worker ready")
         except Exception as e:
             logger.exception("CV Worker init failed (server stays up): %s", e)
@@ -511,7 +513,10 @@ class CVWorker:
                 try:
                     ret, frame = self.cap.read()
                     if not ret:
-                        logger.warning("Failed to read frame from camera")
+                        if (time.time() - self._diag_last_log_time) >= 30:
+                            logger.warning("VPS analysis: no frames received in last 30s (HLS read failing)")
+                            self._diag_last_log_time = time.time()
+                        logger.debug("Failed to read frame from camera")
                         self.camera_status = "offline"
                         time.sleep(0.1)
                         continue
@@ -520,8 +525,10 @@ class CVWorker:
                     # Periodic diagnostic log (~every 5 sec at 30fps)
                     self._diag_det_sum += getattr(self, "_last_num_detections", 0)
                     self._diag_frame_count += 1
-                    if self._diag_frame_count >= 150:
-                        stats = self.counter.get_stats() if self.counter else {}
+                    stats = self.counter.get_stats() if self.counter else {}
+                    # Log every 150 frames (~5s at 30fps) or every 30s wall-clock (so we see activity even if FPS is low)
+                    now_ts = time.time()
+                    if self._diag_frame_count >= 150 or (now_ts - self._diag_last_log_time) >= 30:
                         logger.info(
                             "VPS analysis: frames=%s detections_in_period=%s active_tracks=%s IN=%s OUT=%s",
                             self._diag_frame_count, self._diag_det_sum,
@@ -529,6 +536,7 @@ class CVWorker:
                         )
                         self._diag_frame_count = 0
                         self._diag_det_sum = 0
+                        self._diag_last_log_time = now_ts
                     display_frame = self._draw_ui_overlay(annotated_frame)
                     if self.frame_callback:
                         try:
