@@ -1258,7 +1258,8 @@ async def websocket_endpoint(websocket: WebSocket):
             await asyncio.sleep(0.005)
     
     except WebSocketDisconnect:
-        active_connections.remove(websocket)
+        if websocket in active_connections:
+            active_connections.remove(websocket)
     except Exception as e:
         print(f"WebSocket error: {e}")
         if websocket in active_connections:
