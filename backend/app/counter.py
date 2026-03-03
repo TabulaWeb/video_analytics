@@ -124,6 +124,7 @@ class LineCrossingCounter:
         
         # New track: init and skip (need at least 2 frames with same ID to detect crossing)
         if track_id not in self.tracks:
+            logger.debug("New track_id=%s at cx=%.1f (need same ID next frame to detect crossing)", track_id, cx)
             self.tracks[track_id] = TrackState(
                 track_id=track_id,
                 last_center_x=cx,
@@ -134,10 +135,16 @@ class LineCrossingCounter:
         track = self.tracks[track_id]
         # Cooldown: avoid double-count when person wobbles at the line
         if self._process_calls - self._last_cross_at_call.get(track_id, -999) < self._cooldown_calls:
+            logger.debug("track_id=%s in cooldown, skip crossing check", track_id)
             track.update_position(cx, cy)
             return None
         
         crossing_event = self._check_crossing(track_id, track, cx)
+        logger.debug(
+            "track_id=%s last_cx=%.1f cx=%.1f line_x=%s margin=%s -> %s",
+            track_id, track.last_center_x, cx, self.line_x, max(1, min(5, self.hysteresis_px // 2)),
+            crossing_event if crossing_event else "no_cross"
+        )
         
         if crossing_event:
             self._last_cross_at_call[track_id] = self._process_calls

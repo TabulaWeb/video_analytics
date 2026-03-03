@@ -67,6 +67,9 @@ class CVWorker:
         
         # Last overlay data for WebSocket (line + bboxes) - read from main thread
         self._last_overlay_data: dict = {}
+        # Diagnostic: periodic log (detections, tracks, in/out)
+        self._diag_frame_count = 0
+        self._diag_det_sum = 0
         
         # Cleanup throttler
     
@@ -232,11 +235,13 @@ class CVWorker:
         
         # Process detections
         annotated_frame = frame.copy()
+        num_detections = 0
         
         if results and results[0].boxes is not None and results[0].boxes.id is not None:
             boxes = results[0].boxes.xyxy.cpu().numpy()
             track_ids = results[0].boxes.id.cpu().numpy().astype(int)
             confidences = results[0].boxes.conf.cpu().numpy()
+            num_detections = len(boxes)
             
             for box, track_id, conf in zip(boxes, track_ids, confidences):
                 x1, y1, x2, y2 = box
@@ -312,6 +317,15 @@ class CVWorker:
                 "direction_in": self.counter.direction_in,
             }
         
+        # Diagnostic: log when we have no detections or no track IDs (helps debug "no crossings")
+        if not results or results[0].boxes is None:
+            logger.debug("Frame: no detections (boxes is None)")
+            num_detections = 0
+        elif results[0].boxes.id is None:
+            logger.debug("Frame: detections but no track IDs (tracker not associated yet)")
+        
+        self._last_num_detections = getattr(self, "_last_num_detections", 0)
+        self._last_num_detections = num_detections
         return annotated_frame
     
     def get_overlay_data(self) -> dict:
@@ -503,6 +517,18 @@ class CVWorker:
                         continue
                     self.camera_status = "online"
                     annotated_frame = self._process_frame(frame)
+                    # Periodic diagnostic log (~every 5 sec at 30fps)
+                    self._diag_det_sum += getattr(self, "_last_num_detections", 0)
+                    self._diag_frame_count += 1
+                    if self._diag_frame_count >= 150:
+                        stats = self.counter.get_stats() if self.counter else {}
+                        logger.info(
+                            "VPS analysis: frames=%s detections_in_period=%s active_tracks=%s IN=%s OUT=%s",
+                            self._diag_frame_count, self._diag_det_sum,
+                            stats.get("active_tracks", 0), stats.get("in_count", 0), stats.get("out_count", 0)
+                        )
+                        self._diag_frame_count = 0
+                        self._diag_det_sum = 0
                     display_frame = self._draw_ui_overlay(annotated_frame)
                     if self.frame_callback:
                         try:
