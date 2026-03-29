@@ -1,26 +1,54 @@
+version: "3.9"
+
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: zaga_analytics
+      POSTGRES_USER: zaga
+      POSTGRES_PASSWORD: zaga
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zaga -d zaga_analytics"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   mediamtx:
     image: bluenviron/mediamtx:latest
-    container_name: people-counter-mediamtx
-    restart: unless-stopped
     ports:
-      # RTSP
       - "8554:8554"
-      # HLS
       - "8888:8888"
-      # WebRTC
-      - "8889:8889/tcp"
-      - "8889:8889/udp"
-      # API
+      - "8889:8889"
+      - "1935:1935"
       - "9997:9997"
     volumes:
-      - ./infra/mediamtx/mediamtx.yml:/mediamtx.yml:ro
-    environment:
-      - DAHUA_USERNAME=${DAHUA_USERNAME}
-      - DAHUA_PASSWORD=${DAHUA_PASSWORD}
-    networks:
-      - camera-net
+      - ./infra/mediamtx.yml:/mediamtx.yml:ro
 
-networks:
-  camera-net:
-    driver: bridge
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      ZAGA_DB_URL: postgresql://zaga:zaga@postgres:5432/zaga_analytics
+      ZAGA_MEDIAMTX_API: http://mediamtx:9997
+      ZAGA_MEDIAMTX_RTSP: rtsp://mediamtx:8554
+      ZAGA_MEDIAMTX_HLS: http://mediamtx:8888
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build: ./web
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  pgdata:

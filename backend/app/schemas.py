@@ -1,222 +1,188 @@
-"""Pydantic schemas for API and WebSocket messages."""
 from datetime import datetime
-from typing import Literal, Optional
-from pydantic import BaseModel, Field, field_validator
+from typing import List, Optional
+from uuid import UUID
+
+from pydantic import BaseModel, EmailStr, Field
 
 
-# ============================================
-# Auth Schemas
-# ============================================
+# ── Auth ──────────────────────────────────────────────
 
-class Token(BaseModel):
-    """JWT token response."""
+class AuthRegister(BaseModel):
+    email: str
+    password: str = Field(min_length=6)
+    name: str
+
+class AuthLogin(BaseModel):
+    email: str
+    password: str
+
+class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
 
+class UserOut(BaseModel):
+    id: UUID
+    email: str
+    name: str
+    role: str
+    locale: str
+    is_active: bool
 
-class LoginRequest(BaseModel):
-    """Login credentials."""
-    username: str
-    password: str
+    class Config:
+        from_attributes = True
 
 
-# ============================================
-# Camera Settings Schemas
-# ============================================
+# ── Camera ────────────────────────────────────────────
 
-class CameraSettingsCreate(BaseModel):
-    """Camera settings creation."""
-    ip: str
+class CameraCreate(BaseModel):
+    name: str
+    ip: Optional[str] = None
     port: int = 554
-    username: str
-    password: str = ""  # Default to empty string, required for new settings
+    username: Optional[str] = None
+    password: Optional[str] = None
     channel: int = 1
     subtype: int = 0
+    rtsp_url: Optional[str] = None
     line_x: Optional[int] = None
-    direction_in: Literal["L->R", "R->L"] = "L->R"
-    hysteresis_px: int = 5  # How far past line (px) to count crossing; larger = less sensitive
+    direction_in: str = "L->R"
+    hysteresis_px: int = 5
+    processing_mode: str = "local"
 
+class CameraUpdate(BaseModel):
+    name: Optional[str] = None
+    ip: Optional[str] = None
+    port: Optional[int] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    channel: Optional[int] = None
+    subtype: Optional[int] = None
+    rtsp_url: Optional[str] = None
+    line_x: Optional[int] = None
+    direction_in: Optional[str] = None
+    hysteresis_px: Optional[int] = None
+    processing_mode: Optional[str] = None
+    is_active: Optional[bool] = None
 
-class CameraSettingsResponse(BaseModel):
-    """Camera settings response."""
-    id: int
-    ip: str
+class CameraOut(BaseModel):
+    id: UUID
+    name: str
+    ip: Optional[str]
     port: int
-    username: str
     channel: int
     subtype: int
+    rtsp_url: Optional[str]
     line_x: Optional[int]
     direction_in: str
-    hysteresis_px: int = 5
+    hysteresis_px: int
+    processing_mode: str
+    stream_key: Optional[str]
+    status: str
+    last_error: Optional[str]
+    last_seen_at: Optional[datetime]
     is_active: bool
     created_at: datetime
-    updated_at: datetime
-
-    @field_validator("hysteresis_px", mode="before")
-    @classmethod
-    def hysteresis_default(cls, v):
-        return v if v is not None else 5
 
     class Config:
         from_attributes = True
 
 
-class CameraSettingsSaveResponse(CameraSettingsResponse):
-    """Response after save/update: settings + connection status (200 even if camera unreachable)."""
-    camera_connected: bool = True
-    message: Optional[str] = None
+# ── Events ────────────────────────────────────────────
 
-
-# ============================================
-# Event Schemas
-# ============================================
-
-class CrossingEvent(BaseModel):
-    """Event when a person crosses the line."""
-    id: Optional[int] = None
-    timestamp: datetime = Field(default_factory=datetime.now)
+class EventIn(BaseModel):
+    camera_id: UUID
+    direction: str
     track_id: int
-    direction: Literal["IN", "OUT"]
-    
+    timestamp: Optional[datetime] = None
+
+class EventBatch(BaseModel):
+    events: List[EventIn]
+
+class EventOut(BaseModel):
+    id: int
+    camera_id: UUID
+    direction: str
+    track_id: int
+    timestamp: datetime
+
     class Config:
         from_attributes = True
 
 
-# ============================================
-# Stats Schemas
-# ============================================
-
-class CurrentStats(BaseModel):
-    """Current counter statistics."""
-    in_count: int = 0
-    out_count: int = 0
-    active_tracks: int = 0
-    camera_status: Literal["online", "offline", "initializing"] = "initializing"
-    model_loaded: bool = False
-    fps: float = 0.0
-
+# ── Analytics ─────────────────────────────────────────
 
 class PeriodStats(BaseModel):
-    """Statistics for a time period."""
-    period: str  # "day", "week", "month"
-    start_date: datetime
-    end_date: datetime
+    period: str
+    start_date: str
+    end_date: str
     in_count: int
     out_count: int
     net_flow: int
     total_events: int
 
-
 class HourlyStats(BaseModel):
-    """Hourly statistics."""
     hour: int
-    in_count: int = 0
-    out_count: int = 0
+    in_count: int
+    out_count: int
 
+class DailyStats(BaseModel):
+    date: str
+    IN: int
+    OUT: int
 
-class PeakHour(BaseModel):
-    """Peak hour data."""
-    hour: str
-    count: int
-
-
-# ============================================
-# Export Schemas
-# ============================================
-
-class ExportRequest(BaseModel):
-    """Export data request."""
-    format: Literal["csv", "excel", "pdf"]
-    start_date: Optional[datetime] = None
-    end_date: Optional[datetime] = None
-    include_charts: bool = False
-
-
-# ============================================
-# WebSocket Schemas
-# ============================================
-
-class WSMessage(BaseModel):
-    """WebSocket message format."""
-    type: Literal["stats", "event", "status", "analytics", "dashboard", "overlay"]
-    data: dict
-
-
-# ============================================
-# Misc Schemas
-# ============================================
-
-class ResetResponse(BaseModel):
-    """Response for reset endpoint."""
-    success: bool
-    message: str
-    new_stats: CurrentStats
-
-
-class SystemStatus(BaseModel):
-    """System status response."""
-    camera_online: bool
-    fps: float
-    active_tracks: int
-    model_loaded: bool
-    uptime_seconds: float
-    stream_mode: Optional[Literal["local", "vps"]] = "local"
-    vps_status: Optional[Literal["connecting", "live", "offline"]] = None
-
-
-class StreamConfig(BaseModel):
-    """Stream configuration for frontend (local MJPEG vs VPS HLS/WebRTC)."""
-    stream_mode: Literal["local", "vps"]
-    preferred_protocol: Literal["webrtc", "hls"] = "webrtc"
-    video_feed_url: Optional[str] = None  # For local: backend MJPEG URL
-    vps_hls_url: Optional[str] = None
-    vps_webrtc_url: Optional[str] = None
-
-
-class VpsStreamStatus(BaseModel):
-    """VPS stream health status."""
-    status: Literal["connecting", "live", "offline"]
-    hls_ok: bool = False
-    webrtc_ok: bool = False
-    last_check_utc: Optional[str] = None
-
-
-# ============================================
-# Advanced Analytics Schemas
-# ============================================
-
-class PeakHourAnalytics(BaseModel):
-    """Average peak hour analytics."""
-    peak_hour: Optional[int]
-    avg_count: float
-    total_count: int
-
+class MonthlyStats(BaseModel):
+    month: str
+    IN: int
+    OUT: int
 
 class WeekdayStats(BaseModel):
-    """Statistics by day of week."""
     weekday: str
     IN: int
     OUT: int
     total: int
 
-
 class Averages(BaseModel):
-    """Average visitors metrics."""
     avg_per_day: float
     avg_per_week: float
     avg_per_month: float
 
-
 class GrowthTrend(BaseModel):
-    """Growth trend comparison."""
     week_change_percent: float
     month_change_percent: float
-    trend: Literal["up", "down", "stable"]
-
+    trend: str
 
 class PeakPrediction(BaseModel):
-    """Peak hour prediction."""
     predicted_hour: Optional[int]
     hours_until: int
     expected_count: float
     confidence: float
+
+
+# ── Device ────────────────────────────────────────────
+
+class DeviceRegister(BaseModel):
+    name: str
+    hardware_id: str
+
+class DeviceOut(BaseModel):
+    id: UUID
+    name: str
+    hardware_id: str
+    status: str
+    ip_address: Optional[str]
+    last_seen_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+# ── Camera Log ────────────────────────────────────────
+
+class CameraLogOut(BaseModel):
+    id: int
+    camera_id: UUID
+    level: str
+    message: str
+    timestamp: datetime
+
+    class Config:
+        from_attributes = True

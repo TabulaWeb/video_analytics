@@ -1,1422 +1,275 @@
-"""FastAPI application with WebSocket for real-time People Counter - Extended Version."""
 import asyncio
-import logging
-import os
-import time
-import traceback
-from concurrent.futures import ThreadPoolExecutor
-
-from app.logging_config import setup_logging, get_logger
-
-setup_logging()
-logger = get_logger(__name__)
+import json
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
-from typing import List
-import cv2
-import queue
-import threading
+from datetime import datetime, timezone
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, FileResponse, StreamingResponse, Response, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from sqlalchemy.orm import Session
-import uvicorn
 
 from app.config import settings
-from app.schemas import (
-    CrossingEvent, CurrentStats, WSMessage, ResetResponse,
-    Token, LoginRequest, CameraSettingsCreate, CameraSettingsResponse, CameraSettingsSaveResponse,
-    PeriodStats, HourlyStats, PeakHour, ExportRequest, SystemStatus,
-    StreamConfig, VpsStreamStatus,
-    PeakHourAnalytics, WeekdayStats, Averages, GrowthTrend, PeakPrediction
-)
-from app.db import db
-from app.cv_worker import CVWorker
-from app import vps_health
-from app.auth import authenticate_user, create_access_token, get_current_active_user, ACCESS_TOKEN_EXPIRE_MINUTES
-from app.models import get_db_engine, create_db_session, init_db, Event as DBEvent, CameraSettings as DBCameraSettings
-from app import crud
-from app import export as export_module
+from app.models import Base, engine, SessionLocal, Camera, Event, CameraLog, User, get_db
+from app.api import auth, cameras, events, analytics
+from app.cv.worker import CVManager
+from app.ws.manager import ws_manager
+from app.services import analytics as analytics_svc
 
 
-# ============================================
-# Database Setup
-# ============================================
-
-engine = get_db_engine(db_url=settings.db_url, db_path=settings.db_path)
-SessionLocal = create_db_session(engine)
-init_db(engine)
+cv_manager = CVManager()
 
 
-def get_db():
-    """Get database session."""
+def _on_cv_event(camera_id: str, direction: str, track_id: int):
+    """Callback from server-side CV worker when a line crossing is detected."""
     db = SessionLocal()
     try:
-        yield db
+        db.add(Event(
+            camera_id=camera_id,
+            direction=direction,
+            track_id=track_id,
+            timestamp=datetime.now(timezone.utc),
+        ))
+        cam = db.query(Camera).filter(Camera.id == camera_id).first()
+        if cam:
+            cam.last_seen_at = datetime.now(timezone.utc)
+            cam.status = "online"
+        db.commit()
+    finally:
+        db.close()
+
+    asyncio.get_event_loop().call_soon_threadsafe(
+        asyncio.ensure_future,
+        ws_manager.broadcast("events", {
+            "type": "crossing",
+            "camera_id": camera_id,
+            "direction": direction,
+            "track_id": track_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }),
+    )
+
+
+def _on_cv_status(camera_id: str, status: str, message: str):
+    db = SessionLocal()
+    try:
+        cam = db.query(Camera).filter(Camera.id == camera_id).first()
+        if cam:
+            cam.status = status
+            cam.last_error = message if status == "error" else None
+            cam.last_seen_at = datetime.now(timezone.utc)
+        if message:
+            level = "error" if status == "error" else "info"
+            db.add(CameraLog(camera_id=camera_id, level=level, message=message))
+        db.commit()
+    finally:
+        db.close()
+
+    asyncio.get_event_loop().call_soon_threadsafe(
+        asyncio.ensure_future,
+        ws_manager.broadcast("status", {
+            "type": "camera_status",
+            "camera_id": camera_id,
+            "status": status,
+            "message": message,
+        }),
+    )
+
+
+def _start_server_cameras():
+    """Start CV workers for cameras configured with processing_mode='server'."""
+    db = SessionLocal()
+    try:
+        cams = db.query(Camera).filter(
+            Camera.processing_mode == "server",
+            Camera.is_active.is_(True),
+        ).all()
+        for cam in cams:
+            source = cam.rtsp_url
+            if not source and cam.stream_key:
+                source = f"{settings.mediamtx_rtsp}/{cam.stream_key}"
+            if source:
+                cv_manager.start_camera(
+                    camera_id=str(cam.id),
+                    source_url=source,
+                    on_event=_on_cv_event,
+                    on_status=_on_cv_status,
+                    line_x=cam.line_x or 480,
+                    direction_in=cam.direction_in or "L->R",
+                    hysteresis_px=cam.hysteresis_px or 5,
+                )
     finally:
         db.close()
 
 
-# ============================================
-# Global State
-# ============================================
-
-# Event queue for communication between CV worker and WebSocket
-event_queue: asyncio.Queue = asyncio.Queue()
-
-# Frame queue for video streaming - using threading.Queue for thread-safe access
-frame_queue = queue.Queue(maxsize=2)
-
-# CV Worker instance
-cv_worker: CVWorker = None
-
-# WebSocket connections
-active_connections: List[WebSocket] = []
-
-# Executor for non-blocking DB writes (so CV thread is not blocked)
-_db_executor: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="db_write")
-
-# Application start time
-app_start_time = time.time()
-
-
-# ============================================
-# Callbacks
-# ============================================
-
-def _save_crossing_to_db(event: CrossingEvent):
-    """Run in thread: save crossing event to DB. Does not block CV worker."""
-    try:
-        if getattr(settings, "db_url", None) and settings.db_url and str(settings.db_url).startswith("postgresql://"):
-            session = SessionLocal()
-            try:
-                db_event = DBEvent(
-                    timestamp=event.timestamp,
-                    track_id=event.track_id,
-                    direction=event.direction,
-                )
-                session.add(db_event)
-                session.commit()
-                session.refresh(db_event)
-                logger.info("Crossing event saved to PostgreSQL: id=%s direction=%s", db_event.id, event.direction)
-            except Exception as e:
-                logger.exception("Failed to save crossing event to PostgreSQL: %s", e)
-                session.rollback()
-            finally:
-                session.close()
-        else:
-            event_id = db.insert_event(event)
-            logger.info("Crossing event saved to SQLite: id=%s direction=%s", event_id, event.direction)
-    except Exception as e:
-        logger.exception("DB write error: %s", e)
-
-
-def on_crossing_event(event: CrossingEvent):
-    """
-    Callback for CV worker when a crossing event occurs.
-    Puts event in queue immediately for fast WebSocket broadcast; DB write runs in thread so CV is not blocked.
-    """
-    logger.info(
-        "Crossing event (callback): direction=%s track_id=%s -> broadcast + DB save",
-        event.direction, event.track_id
-    )
-    # Broadcast first: schedule put so UI updates as soon as the event loop runs
-    try:
-        loop = asyncio.get_event_loop()
-        asyncio.run_coroutine_threadsafe(event_queue.put(("event", event)), loop)
-    except RuntimeError:
-        pass
-    # DB write in background so we don't block the CV thread
-    _db_executor.submit(_save_crossing_to_db, event)
-
-
-def on_frame_ready(frame):
-    """
-    Callback for CV worker when a new frame is ready.
-    
-    This runs in the CV worker thread.
-    """
-    try:
-        if frame_queue.full():
-            try:
-                frame_queue.get_nowait()
-            except:
-                pass
-        
+async def _analytics_broadcaster():
+    """Periodically broadcast analytics snapshot to connected web dashboards."""
+    while True:
+        await asyncio.sleep(30)
+        if ws_manager.analytics_count == 0:
+            continue
+        db = SessionLocal()
         try:
-            frame_queue.put_nowait(frame)
-        except queue.Full:
+            snapshot = {
+                "type": "analytics",
+                "data": {
+                    "day": analytics_svc.get_period_stats(db, "day"),
+                    "week": analytics_svc.get_period_stats(db, "week"),
+                    "month": analytics_svc.get_period_stats(db, "month"),
+                    "hourly": analytics_svc.get_hourly_stats(db),
+                    "daily_range": analytics_svc.get_daily_stats(
+                        db,
+                        datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0),
+                        datetime.now(timezone.utc),
+                    ),
+                    "averages": analytics_svc.get_averages(db),
+                    "growth_trend": analytics_svc.get_growth_trend(db),
+                    "predict_peak": analytics_svc.predict_peak_hour(db),
+                },
+            }
+            await ws_manager.broadcast("analytics", snapshot)
+        except Exception:
             pass
-    except Exception as e:
-        pass
+        finally:
+            db.close()
 
 
-# ============================================
-# Lifespan
-# ============================================
+def _ensure_default_admin():
+    """Create default admin user if no users exist."""
+    from app.services.auth import hash_password
+    db = SessionLocal()
+    try:
+        if db.query(User).count() == 0:
+            from app.models import User as UserModel
+            admin = UserModel(
+                email="admin@zaga-game.ru",
+                password_hash=hash_password("daniil2009"),
+                name="Admin",
+                role="admin",
+            )
+            db.add(admin)
+            db.commit()
+            print("Default admin created: admin@zaga-game.ru")
+    finally:
+        db.close()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Manage application lifecycle: startup and shutdown."""
-    global cv_worker
-    stream_mode = getattr(settings, "stream_mode", "local") or "local"
-    logger.info("Starting People Counter application (stream_mode=%s)", stream_mode)
-    _db_for_events = "PostgreSQL" if (getattr(settings, "db_url", None) and str(settings.db_url or "").startswith("postgresql://")) else "SQLite"
-    logger.info("Crossing events will be saved to: %s", _db_for_events)
-    if stream_mode == "vps":
-        logger.info("VPS mode: VPS_HLS_URL=%s, VPS_WEBRTC_URL=%s", bool(settings.vps_hls_url), bool(settings.vps_webrtc_url))
-        # Start CV worker from HLS stream (optional) so we count line crossings from the same stream
-        vps_analysis = getattr(settings, "vps_analysis_enabled", True)
-        if vps_analysis and getattr(settings, "vps_hls_url", None):
-            try:
-                settings.camera_index = settings.vps_hls_url
-                cv_worker = CVWorker(
-                    event_callback=on_crossing_event,
-                    frame_callback=None,
-                )
-                cv_worker.start()
-                logger.info("VPS analysis started: counting from HLS stream")
-                # Apply saved camera settings (line_x, direction_in, hysteresis) from DB so line position matches admin
-                try:
-                    db_session = SessionLocal()
-                    try:
-                        cam = crud.get_camera_settings(db_session)
-                        if cam and (cam.line_x is not None or getattr(cam, "direction_in", None) or getattr(cam, "hysteresis_px", None)):
-                            if cam.line_x is not None:
-                                settings.line_x = cam.line_x
-                            if getattr(cam, "direction_in", None):
-                                settings.direction_in = cam.direction_in
-                            if getattr(cam, "hysteresis_px", None) is not None:
-                                settings.hysteresis_px = cam.hysteresis_px
-                            if cv_worker:
-                                cv_worker.update_counter_config(
-                                    line_x=settings.line_x, direction_in=settings.direction_in, hysteresis_px=settings.hysteresis_px
-                                )
-                            if cam.line_x is not None:
-                                logger.info("VPS counter config from DB: line_x=%s direction_in=%s", settings.line_x, settings.direction_in)
-                            else:
-                                logger.info("VPS counter config from DB: direction_in=%s (line at center — set line_x in Admin if person is on one side)", settings.direction_in)
-                    finally:
-                        db_session.close()
-                except Exception as db_e:
-                    logger.debug("Could not load camera settings from DB at startup: %s", db_e)
-            except Exception as e:
-                logger.exception("VPS analysis failed to start (server still up): %s", e)
-                cv_worker = None
-        elif stream_mode == "vps" and not vps_analysis:
-            logger.info("VPS analysis disabled (VPS_ANALYSIS_ENABLED=false)")
-    else:
-        logger.info("Camera will not start automatically - configure via Admin Panel")
-    
-    # In local mode, CV worker is started from Admin Panel after camera settings are configured
-    
-    # Start background tasks: stats every 2s, analytics every 30s, dashboard every 5s, overlay ~2.5/s (VPS)
-    stats_task = asyncio.create_task(broadcast_stats_periodically())
-    analytics_task = asyncio.create_task(broadcast_analytics_periodically())
-    dashboard_task = asyncio.create_task(broadcast_dashboard_periodically())
-    overlay_task = asyncio.create_task(broadcast_overlay_periodically())
-    
+    Base.metadata.create_all(bind=engine)
+    _ensure_default_admin()
+    _start_server_cameras()
+    task = asyncio.create_task(_analytics_broadcaster())
     yield
-    
-    # Shutdown
-    logger.info("Shutting down...")
-    stats_task.cancel()
-    analytics_task.cancel()
-    dashboard_task.cancel()
-    overlay_task.cancel()
-    if cv_worker:
-        cv_worker.stop()
-    
-    # Close all WebSocket connections
-    for connection in active_connections:
-        try:
-            await connection.close()
-        except:
-            pass
+    task.cancel()
+    cv_manager.stop_all()
 
 
-# Logging is configured in logging_config (PC_LOG_LEVEL / LOG_LEVEL env)
+app = FastAPI(title="Zaga Analytics", version="1.0.0", lifespan=lifespan)
 
-# ============================================
-# FastAPI App
-# ============================================
-
-app = FastAPI(
-    title="People Counter API",
-    description="Real-time people counting with YOLOv8, ByteTrack, and advanced analytics",
-    version="2.0.0",
-    lifespan=lifespan
-)
-
-# CORS: allow origins from env (comma-separated) or default localhost
-_cors_default = [
-    "http://localhost:3000", "http://localhost:3001", "http://localhost:3002",
-    "http://127.0.0.1:3000", "http://127.0.0.1:3001", "http://127.0.0.1:3002",
-]
-_cors_env = os.environ.get("CORS_ORIGINS", "").strip()
-cors_origins = [o.strip() for o in _cors_env.split(",") if o.strip()] or _cors_default
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins,
+    allow_origins=settings.cors_origins.split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+app.include_router(auth.router)
+app.include_router(cameras.router)
+app.include_router(events.router)
+app.include_router(analytics.router)
 
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    """Log full traceback for any unhandled exception (shows in docker logs)."""
-    logger.exception("Unhandled exception: %s", exc)
-    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
+# ── WebSocket endpoints ───────────────────────────────
 
-# Mount static files (legacy UI)
-static_path = os.path.join(os.path.dirname(__file__), "static")
-if os.path.exists(static_path):
-    app.mount("/static", StaticFiles(directory=static_path), name="static")
-
-
-# ============================================
-# Auth Endpoints
-# ============================================
-
-@app.post("/api/auth/login", response_model=Token)
-async def login(request: LoginRequest):
-    """Authenticate user and return JWT token."""
-    try:
-        user = authenticate_user(request.username, request.password)
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Incorrect username or password",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        access_token = create_access_token(
-            data={"sub": user.username},
-            expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-        )
-        if isinstance(access_token, bytes):
-            access_token = access_token.decode("utf-8")
-        return {"access_token": access_token, "token_type": "bearer"}
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("Login failed: %s", e)
-        raise HTTPException(status_code=500, detail="Internal server error during login")
-
-
-@app.get("/api/auth/me")
-async def get_current_user_info(current_user = Depends(get_current_active_user)):
-    """Get current user information."""
-    return {"username": current_user.username, "full_name": current_user.full_name}
-
-
-# ============================================
-# Camera Settings Endpoints
-# ============================================
-
-@app.get("/api/camera/settings")
-async def get_camera_settings(
-    db: Session = Depends(get_db),
-    current_user = Depends(get_current_active_user)
-):
-    """Get current camera settings."""
-    settings = crud.get_camera_settings(db)
-    if not settings:
-        # Return default settings if none exist
-        return {
-            "id": 0,
-            "ip": "192.168.0.201",
-            "port": 554,
-            "username": "admin",
-            "channel": 1,
-            "subtype": 0,
-            "line_x": None,
-            "direction_in": "L->R",
-            "is_active": False,
-            "created_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat(),
-        }
-    return settings
-
-
-@app.post("/api/camera/settings", response_model=CameraSettingsSaveResponse)
-async def create_camera_settings(
-    settings_data: CameraSettingsCreate,
-    db: Session = Depends(get_db),
-    current_user = Depends(get_current_active_user)
-):
-    """Create or update camera settings and restart camera. Returns 200; camera_connected=False if camera unreachable."""
-    global cv_worker
-    
-    settings_dict = settings_data.model_dump()
-    new_settings = crud.create_camera_settings(db, settings_dict)
-    
-    # Build RTSP URL for IP camera
-    rtsp_url = (
-        f"rtsp://{new_settings.username}:{new_settings.password}"
-        f"@{new_settings.ip}:{new_settings.port}"
-        f"/cam/realmonitor?channel={new_settings.channel}&subtype={new_settings.subtype}"
-    )
-    
-    # Check if using MediaMTX proxy
-    if new_settings.ip == "localhost" or new_settings.ip == "127.0.0.1":
-        rtsp_url = f"rtsp://{new_settings.ip}:{new_settings.port}/dahua"
-    
-    # In VPS mode we do not connect to camera; apply line/direction/hysteresis to running analysis only
-    if getattr(settings, "stream_mode", "local") == "vps":
-        if new_settings.line_x is not None:
-            settings.line_x = new_settings.line_x
-        settings.direction_in = new_settings.direction_in
-        settings.hysteresis_px = getattr(new_settings, "hysteresis_px", None) or settings.hysteresis_px
-        if cv_worker:
-            cv_worker.update_counter_config(line_x=settings.line_x, direction_in=settings.direction_in, hysteresis_px=settings.hysteresis_px)
-        return CameraSettingsSaveResponse(
-            **CameraSettingsResponse.model_validate(new_settings).model_dump(),
-            camera_connected=False,
-            message="В режиме VPS приложение не подключается к камере. Видео воспроизводится с VPS (HLS/WebRTC). Настройки линии и направления применены к подсчёту.",
-        )
-
-    logger.info("Starting camera with RTSP URL (password masked)")
-    
-    # Stop existing worker
-    if cv_worker:
-        cv_worker.stop()
-        await asyncio.sleep(1)
-    
-    # Update config with new settings
-    settings.camera_index = rtsp_url
-    if new_settings.line_x:
-        settings.line_x = new_settings.line_x
-    settings.direction_in = new_settings.direction_in
-    if getattr(new_settings, "hysteresis_px", None) is not None:
-        settings.hysteresis_px = new_settings.hysteresis_px
-    
-    # Start new CV worker
-    cv_worker = CVWorker(
-        event_callback=on_crossing_event,
-        frame_callback=on_frame_ready
-    )
-    cv_worker.start()
-    
-    # Wait for initialization and check camera status
-    await asyncio.sleep(3)
-    
-    connected = cv_worker.camera_status == "online"
-    msg = None if connected else (
-        f"Настройки сохранены. Камера пока недоступна с этого сервера "
-        f"({new_settings.ip}:{new_settings.port}). Проверьте сеть/VPN или используйте MediaMTX."
-    )
-    return CameraSettingsSaveResponse(
-        **CameraSettingsResponse.model_validate(new_settings).model_dump(),
-        camera_connected=connected,
-        message=msg,
-    )
-
-
-@app.put("/api/camera/settings/{settings_id}", response_model=CameraSettingsSaveResponse)
-async def update_camera_settings(
-    settings_id: int,
-    settings_data: CameraSettingsCreate,
-    db: Session = Depends(get_db),
-    current_user = Depends(get_current_active_user)
-):
-    """Update camera settings and restart camera. Returns 200; camera_connected=False if camera unreachable."""
-    global cv_worker
-    
-    settings_dict = settings_data.model_dump()
-    updated_settings = crud.update_camera_settings(db, settings_id, settings_dict)
-    if not updated_settings:
-        raise HTTPException(status_code=404, detail="Camera settings not found")
-    
-    # Build RTSP URL for IP camera
-    rtsp_url = (
-        f"rtsp://{updated_settings.username}:{updated_settings.password}"
-        f"@{updated_settings.ip}:{updated_settings.port}"
-        f"/cam/realmonitor?channel={updated_settings.channel}&subtype={updated_settings.subtype}"
-    )
-    
-    # Check if using MediaMTX proxy
-    if updated_settings.ip == "localhost" or updated_settings.ip == "127.0.0.1":
-        rtsp_url = f"rtsp://{updated_settings.ip}:{updated_settings.port}/dahua"
-    
-    # In VPS mode we do not connect to camera; apply line/direction/hysteresis to running analysis only
-    if getattr(settings, "stream_mode", "local") == "vps":
-        if updated_settings.line_x is not None:
-            settings.line_x = updated_settings.line_x
-        settings.direction_in = updated_settings.direction_in
-        settings.hysteresis_px = getattr(updated_settings, "hysteresis_px", None) or settings.hysteresis_px
-        if cv_worker:
-            cv_worker.update_counter_config(line_x=settings.line_x, direction_in=settings.direction_in, hysteresis_px=settings.hysteresis_px)
-        return CameraSettingsSaveResponse(
-            **CameraSettingsResponse.model_validate(updated_settings).model_dump(),
-            camera_connected=False,
-            message="В режиме VPS приложение не подключается к камере. Видео воспроизводится с VPS (HLS/WebRTC). Настройки линии и направления применены к подсчёту.",
-        )
-
-    logger.info("Restarting camera with RTSP URL (password masked)")
-    
-    # Stop existing worker
-    if cv_worker:
-        cv_worker.stop()
-        await asyncio.sleep(1)
-    
-    # Update config with new settings
-    settings.camera_index = rtsp_url
-    if updated_settings.line_x:
-        settings.line_x = updated_settings.line_x
-    settings.direction_in = updated_settings.direction_in
-    if getattr(updated_settings, "hysteresis_px", None) is not None:
-        settings.hysteresis_px = updated_settings.hysteresis_px
-    
-    # Start new CV worker
-    cv_worker = CVWorker(
-        event_callback=on_crossing_event,
-        frame_callback=on_frame_ready
-    )
-    cv_worker.start()
-    
-    # Wait for initialization and check camera status
-    await asyncio.sleep(3)
-    
-    connected = cv_worker.camera_status == "online"
-    msg = None if connected else (
-        f"Настройки сохранены. Камера пока недоступна с этого сервера "
-        f"({updated_settings.ip}:{updated_settings.port}). Проверьте сеть/VPN или используйте MediaMTX."
-    )
-    return CameraSettingsSaveResponse(
-        **CameraSettingsResponse.model_validate(updated_settings).model_dump(),
-        camera_connected=connected,
-        message=msg,
-    )
-
-
-# ============================================
-# System Status Endpoints
-# ============================================
-
-@app.get("/api/system/status", response_model=SystemStatus)
-async def get_system_status():
-    """Get system status. In vps mode, camera_online reflects VPS stream availability."""
-    stream_mode = getattr(settings, "stream_mode", "local") or "local"
-    uptime = time.time() - app_start_time
-
-    if stream_mode == "vps":
-        vps = await vps_health.get_vps_status()
-        return SystemStatus(
-            camera_online=(vps.status == "live"),
-            fps=0.0,
-            active_tracks=0,
-            model_loaded=False,
-            uptime_seconds=uptime,
-            stream_mode="vps",
-            vps_status=vps.status,
-        )
-    if cv_worker:
-        stats = cv_worker.get_status()
-        return SystemStatus(
-            camera_online=(stats.camera_status == "online"),
-            fps=stats.fps,
-            active_tracks=stats.active_tracks,
-            model_loaded=stats.model_loaded,
-            uptime_seconds=uptime,
-            stream_mode="local",
-            vps_status=None,
-        )
-    return SystemStatus(
-        camera_online=False,
-        fps=0.0,
-        active_tracks=0,
-        model_loaded=False,
-        uptime_seconds=uptime,
-        stream_mode="local",
-        vps_status=None,
-    )
-
-
-@app.get("/api/stats/current", response_model=CurrentStats)
-async def get_current_stats():
-    """Get current counter statistics. In vps mode, camera_status reflects VPS stream; counts come from HLS analysis."""
-    stream_mode = getattr(settings, "stream_mode", "local") or "local"
-    if stream_mode == "vps":
-        vps = await vps_health.get_vps_status()
-        cam_status = "online" if vps.status == "live" else ("initializing" if vps.status == "connecting" else "offline")
-        if cv_worker:
-            stats = cv_worker.get_status()
-            return CurrentStats(
-                camera_status=cam_status,
-                model_loaded=stats.model_loaded,
-                fps=stats.fps,
-                in_count=stats.in_count,
-                out_count=stats.out_count,
-                active_tracks=stats.active_tracks,
-            )
-        return CurrentStats(camera_status=cam_status, model_loaded=False, fps=0.0, in_count=0, out_count=0, active_tracks=0)
-    if cv_worker:
-        return cv_worker.get_status()
-    return CurrentStats(camera_status="offline", model_loaded=False, fps=0.0)
-
-
-# ============================================
-# Stream Config (local vs VPS)
-# ============================================
-
-@app.get("/api/stream/config", response_model=StreamConfig)
-async def get_stream_config(request: Request):
-    """Stream configuration for frontend: local MJPEG vs VPS HLS/WebRTC."""
-    base_url = str(request.base_url).rstrip("/")
-    stream_mode = getattr(settings, "stream_mode", "local") or "local"
-    preferred = getattr(settings, "stream_preferred_protocol", "webrtc") or "webrtc"
-    video_feed_url = f"{base_url}/video_feed" if stream_mode == "local" else None
-    return StreamConfig(
-        stream_mode=stream_mode,
-        preferred_protocol=preferred,
-        video_feed_url=video_feed_url,
-        vps_hls_url=getattr(settings, "vps_hls_url", None) or None,
-        vps_webrtc_url=getattr(settings, "vps_webrtc_url", None) or None,
-    )
-
-
-@app.get("/api/stream/vps-status", response_model=VpsStreamStatus)
-async def get_vps_stream_status():
-    """VPS stream health: connecting / live / offline. Uses exponential backoff on failure."""
-    return await vps_health.get_vps_status()
-
-
-# ============================================
-# Events Endpoints
-# ============================================
-
-@app.get("/api/events", response_model=List[CrossingEvent])
-async def get_events(
-    limit: int = 50,
-    skip: int = 0,
-    start_date: datetime = None,
-    end_date: datetime = None,
-    db: Session = Depends(get_db)
-):
-    """Get crossing events from database."""
-    db_events = crud.get_events(db, skip=skip, limit=limit, start_date=start_date, end_date=end_date)
-    
-    # Convert SQLAlchemy models to Pydantic schemas
-    return [
-        CrossingEvent(
-            id=event.id,
-            timestamp=event.timestamp,
-            track_id=event.track_id,
-            direction=event.direction
-        )
-        for event in db_events
-    ]
-
-
-@app.post("/api/events/clear")
-async def clear_events(current_user = Depends(get_current_active_user)):
-    """Clear all events from database."""
-    try:
-        db.clear_all_events()
-        return {
-            "success": True,
-            "message": "All events cleared successfully"
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "error": str(e)
-        }
-
-
-@app.post("/api/reset", response_model=ResetResponse)
-async def reset_counters(current_user = Depends(get_current_active_user)):
-    """Reset in-memory counters (does not clear database)."""
-    if cv_worker:
-        cv_worker.reset_counters()
-        
-        # Broadcast reset to all clients
-        stats = cv_worker.get_status()
-        message = WSMessage(type="status", data={"message": "Counters reset"})
-        await broadcast_message(message.model_dump())
-        
-        return ResetResponse(
-            success=True,
-            message="Counters reset successfully",
-            new_stats=stats
-        )
-    else:
-        return ResetResponse(
-            success=False,
-            message="CV worker not running",
-            new_stats=CurrentStats(camera_status="offline", model_loaded=False, fps=0.0)
-        )
-
-
-# ============================================
-# Analytics Endpoints
-# ============================================
-
-@app.get("/api/analytics/day", response_model=PeriodStats)
-async def get_day_stats(
-    date: datetime = None,
-    db: Session = Depends(get_db)
-):
-    """Get statistics for a specific day."""
-    if not date:
-        date = datetime.now()
-    
-    start_date = date.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_date = start_date + timedelta(days=1)
-    
-    counts = crud.get_event_counts(db, start_date, end_date)
-    
-    return PeriodStats(
-        period="day",
-        start_date=start_date,
-        end_date=end_date,
-        in_count=counts["IN"],
-        out_count=counts["OUT"],
-        net_flow=counts["IN"] - counts["OUT"],
-        total_events=counts["IN"] + counts["OUT"]
-    )
-
-
-@app.get("/api/analytics/week", response_model=PeriodStats)
-async def get_week_stats(
-    date: datetime = None,
-    db: Session = Depends(get_db)
-):
-    """Get statistics for a specific week."""
-    if not date:
-        date = datetime.now()
-    
-    # Start of week (Monday)
-    start_date = date - timedelta(days=date.weekday())
-    start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-    end_date = start_date + timedelta(days=7)
-    
-    counts = crud.get_event_counts(db, start_date, end_date)
-    
-    return PeriodStats(
-        period="week",
-        start_date=start_date,
-        end_date=end_date,
-        in_count=counts["IN"],
-        out_count=counts["OUT"],
-        net_flow=counts["IN"] - counts["OUT"],
-        total_events=counts["IN"] + counts["OUT"]
-    )
-
-
-@app.get("/api/analytics/month", response_model=PeriodStats)
-async def get_month_stats(
-    date: datetime = None,
-    db: Session = Depends(get_db)
-):
-    """Get statistics for a specific month."""
-    if not date:
-        date = datetime.now()
-    
-    start_date = date.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    
-    # Calculate next month
-    if start_date.month == 12:
-        end_date = start_date.replace(year=start_date.year + 1, month=1)
-    else:
-        end_date = start_date.replace(month=start_date.month + 1)
-    
-    counts = crud.get_event_counts(db, start_date, end_date)
-    
-    return PeriodStats(
-        period="month",
-        start_date=start_date,
-        end_date=end_date,
-        in_count=counts["IN"],
-        out_count=counts["OUT"],
-        net_flow=counts["IN"] - counts["OUT"],
-        total_events=counts["IN"] + counts["OUT"]
-    )
-
-
-@app.get("/api/analytics/hourly", response_model=List[HourlyStats])
-async def get_hourly_stats(
-    date: datetime = None,
-    db: Session = Depends(get_db)
-):
-    """Get hourly statistics for a specific day."""
-    hourly_data = crud.get_hourly_stats(db, date)
-    
-    return [
-        HourlyStats(hour=h["hour"], in_count=h["IN"], out_count=h["OUT"])
-        for h in hourly_data
-    ]
-
-
-@app.get("/api/analytics/peak-hours", response_model=List[PeakHour])
-async def get_peak_hours(
-    start_date: datetime = None,
-    end_date: datetime = None,
-    limit: int = 10,
-    db: Session = Depends(get_db)
-):
-    """Get peak hours with most activity."""
-    if not start_date:
-        start_date = datetime.now() - timedelta(days=7)
-    if not end_date:
-        end_date = datetime.now()
-    
-    peak_data = crud.get_peak_hours(db, start_date, end_date, limit)
-    
-    return [PeakHour(hour=p["hour"], count=p["count"]) for p in peak_data]
-
-
-@app.get("/api/analytics/daily", response_model=List[dict])
-async def get_daily_stats_range(
-    start_date: datetime = None,
-    end_date: datetime = None,
-    db: Session = Depends(get_db)
-):
-    """Get daily statistics for a date range."""
-    if not start_date or not end_date:
-        # Default to full current month (from 1st to last day)
-        now = datetime.now()
-        start_date = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        # Get last day of current month
-        if now.month == 12:
-            end_date = now.replace(month=12, day=31, hour=23, minute=59, second=59, microsecond=999999)
-        else:
-            next_month = now.replace(month=now.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
-            end_date = next_month - timedelta(seconds=1)
-    
-    return crud.get_daily_stats(db, start_date, end_date)
-
-
-@app.get("/api/analytics/monthly", response_model=List[dict])
-async def get_monthly_stats_range(
-    start_date: datetime = None,
-    end_date: datetime = None,
-    db: Session = Depends(get_db)
-):
-    """Get monthly statistics for a date range."""
-    if not start_date or not end_date:
-        # Default to full current year (from January to December)
-        now = datetime.now()
-        start_date = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-        end_date = now.replace(month=12, day=31, hour=23, minute=59, second=59, microsecond=999999)
-    
-    return crud.get_monthly_stats(db, start_date, end_date)
-
-
-@app.get("/api/analytics/peak-hour-avg", response_model=PeakHourAnalytics)
-async def get_average_peak_hour(
-    days: int = 30,
-    db: Session = Depends(get_db)
-):
-    """Get average peak hour across multiple days. """
-    return crud.get_average_peak_hour(db, days)
-
-
-@app.get("/api/analytics/weekday-stats", response_model=List[WeekdayStats])
-async def get_weekday_statistics(
-    days: int = 30,
-    db: Session = Depends(get_db)
-):
-    """Get activity statistics by day of week."""
-    return crud.get_weekday_stats(db, days)
-
-
-@app.get("/api/analytics/averages", response_model=Averages)
-async def get_average_metrics(
-    db: Session = Depends(get_db)
-):
-    """Get average visitors per day/week/month."""
-    return crud.get_averages(db)
-
-
-@app.get("/api/analytics/growth-trend", response_model=GrowthTrend)
-async def get_growth_trend_analysis(
-    db: Session = Depends(get_db)
-):
-    """Get growth trend comparing current vs previous periods."""
-    return crud.get_growth_trend(db)
-
-
-@app.get("/api/analytics/predict-peak", response_model=PeakPrediction)
-async def predict_next_peak(
-    days: int = 30,
-    db: Session = Depends(get_db)
-):
-    """Predict next peak hour based on historical data."""
-    return crud.predict_peak_hour(db, days)
-
-
-# ============================================
-# Export Endpoints
-# ============================================
-
-@app.post("/api/export")
-async def export_data(
-    request: ExportRequest,
-    db: Session = Depends(get_db),
-    current_user = Depends(get_current_active_user)
-):
-    """Export data in requested format."""
-    # Get events
-    db_events = crud.get_events(
-        db,
-        skip=0,
-        limit=10000,
-        start_date=request.start_date,
-        end_date=request.end_date
-    )
-    
-    # Convert to dict format
-    events = [
-        {
-            "id": e.id,
-            "timestamp": e.timestamp,
-            "track_id": e.track_id,
-            "direction": e.direction
-        }
-        for e in db_events
-    ]
-    
-    # Get statistics
-    counts = crud.get_event_counts(db, request.start_date, request.end_date)
-    stats = {
-        "in_count": counts["IN"],
-        "out_count": counts["OUT"],
-        "total_events": counts["IN"] + counts["OUT"]
-    }
-    
-    # Generate export based on format
-    if request.format == "csv":
-        data = export_module.export_to_csv(events)
-        media_type = "text/csv"
-        filename = f"people_counter_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    
-    elif request.format == "excel":
-        data = export_module.export_to_excel(events, stats)
-        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        filename = f"people_counter_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    
-    elif request.format == "pdf":
-        # Get hourly stats if charts requested
-        hourly_stats = None
-        if request.include_charts:
-            hourly_stats_data = crud.get_hourly_stats(db, request.start_date)
-            hourly_stats = [{"hour": h["hour"], "IN": h["IN"], "OUT": h["OUT"]} for h in hourly_stats_data]
-        
-        data = export_module.export_to_pdf(events, stats, hourly_stats)
-        media_type = "application/pdf"
-        filename = f"people_counter_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-    
-    else:
-        raise HTTPException(status_code=400, detail="Invalid export format")
-    
-    return Response(
-        content=data,
-        media_type=media_type,
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
-    )
-
-
-# ============================================
-# Legacy Endpoints (backward compatibility)
-# ============================================
-
-class CameraSwitchRequest(BaseModel):
-    """Request model for camera switching."""
-    source: str
-
-
-@app.post("/api/camera/switch")
-async def switch_camera(request: CameraSwitchRequest):
-    """
-    Switch camera source dynamically (legacy endpoint).
-    
-    Args:
-        request.source: 'webcam' for local webcam (0) or 'dahua' for IP camera
-    """
-    if getattr(settings, "stream_mode", "local") == "vps":
-        logger.info("Camera switch rejected: stream_mode=vps")
-        return {"success": False, "message": "В режиме VPS переключение камеры недоступно. Видео идёт с VPS."}
-    source = request.source
-    global cv_worker
-    
-    try:
-        # Determine camera_index based on source
-        if source == "webcam":
-            new_camera_index = 0
-        elif source == "dahua":
-            new_camera_index = settings.get_dahua_rtsp_url()
-        else:
-            logger.warning("Unknown camera source: %s", source)
-            return {"success": False, "message": f"Неизвестный источник: {source}"}
-        
-        logger.info("Switching camera to: %s", source)
-        
-        # Stop current worker
-        if cv_worker:
-            cv_worker.stop()
-        
-        # Temporarily override camera_index
-        original_camera_index = settings.camera_index
-        settings.camera_index = new_camera_index
-        
-        # Create new worker with new camera
-        cv_worker = CVWorker(
-            event_callback=on_crossing_event,
-            frame_callback=on_frame_ready
-        )
-        
-        # Start new worker
-        cv_worker.start()
-        
-        # Wait a bit for camera to initialize
-        await asyncio.sleep(2)
-        
-        # Check if camera is online
-        if cv_worker.camera_status == "online":
-            logger.info("Camera switched to: %s", source)
-            return {
-                "success": True,
-                "message": f"Переключено на: {source}",
-                "camera_index": str(new_camera_index) if source == "dahua" else new_camera_index
-            }
-        else:
-            logger.warning("Failed to switch camera to: %s (camera_status=%s)", source, cv_worker.camera_status)
-            # Restore original camera on failure
-            settings.camera_index = original_camera_index
-            cv_worker.stop()
-            cv_worker = CVWorker(
-                event_callback=on_crossing_event,
-                frame_callback=on_frame_ready
-            )
-            cv_worker.start()
-            return {
-                "success": False,
-                "message": f"Не удалось подключиться к {source}. Проверьте настройки камеры."
-            }
-    
-    except Exception as e:
-        logger.exception("Error switching camera: %s", e)
-        return {"success": False, "message": f"Ошибка: {str(e)}"}
-
-
-@app.get("/", response_class=HTMLResponse)
-async def root():
-    """Serve the main web interface (legacy)."""
-    html_path = os.path.join(static_path, "index.html")
-    if os.path.exists(html_path):
-        return FileResponse(html_path)
-    else:
-        return HTMLResponse("""
-        <html>
-            <head><title>People Counter API</title></head>
-            <body>
-                <h1>People Counter API</h1>
-                <p>API is running. Access the admin panel at <a href="http://localhost:3000">localhost:3000</a></p>
-                <p>API documentation: <a href="/docs">/docs</a></p>
-            </body>
-        </html>
-        """)
-
-
-# ============================================
-# Analytics snapshot for WebSocket (single payload, no polling)
-# ============================================
-
-def build_analytics_snapshot(db: Session) -> dict:
-    """Build full analytics payload for frontend (day, week, month, hourly, etc.)."""
-    now = datetime.now()
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    # Day
-    day_end = today_start + timedelta(days=1)
-    day_counts = crud.get_event_counts(db, today_start, day_end)
-    day_stats = {
-        "period": "day",
-        "start_date": today_start.isoformat(),
-        "end_date": day_end.isoformat(),
-        "in_count": day_counts["IN"],
-        "out_count": day_counts["OUT"],
-        "net_flow": day_counts["IN"] - day_counts["OUT"],
-        "total_events": day_counts["IN"] + day_counts["OUT"],
-    }
-    # Week
-    week_start = today_start - timedelta(days=now.weekday())
-    week_end = week_start + timedelta(days=7)
-    week_counts = crud.get_event_counts(db, week_start, week_end)
-    week_stats = {
-        "period": "week",
-        "start_date": week_start.isoformat(),
-        "end_date": week_end.isoformat(),
-        "in_count": week_counts["IN"],
-        "out_count": week_counts["OUT"],
-        "net_flow": week_counts["IN"] - week_counts["OUT"],
-        "total_events": week_counts["IN"] + week_counts["OUT"],
-    }
-    # Month
-    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    next_month = month_start.replace(month=month_start.month % 12 + 1, day=1) if month_start.month < 12 else month_start.replace(year=month_start.year + 1, month=1, day=1)
-    month_end = next_month - timedelta(seconds=1)
-    month_counts = crud.get_event_counts(db, month_start, month_end)
-    month_stats = {
-        "period": "month",
-        "start_date": month_start.isoformat(),
-        "end_date": month_end.isoformat(),
-        "in_count": month_counts["IN"],
-        "out_count": month_counts["OUT"],
-        "net_flow": month_counts["IN"] - month_counts["OUT"],
-        "total_events": month_counts["IN"] + month_counts["OUT"],
-    }
-    # Hourly (today)
-    hourly_raw = crud.get_hourly_stats(db, now)
-    hourly = [{"hour": h["hour"], "in_count": h["IN"], "out_count": h["OUT"]} for h in hourly_raw]
-    # Daily range (current month)
-    end_month = month_start + timedelta(days=32)
-    end_month = end_month.replace(day=1) - timedelta(seconds=1)
-    daily_range = crud.get_daily_stats(db, month_start, end_month)
-    # Monthly range (current year)
-    year_start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-    year_end = now.replace(month=12, day=31, hour=23, minute=59, second=59, microsecond=999999)
-    monthly_range = crud.get_monthly_stats(db, year_start, year_end)
-    # Peak hour avg, weekday, averages, growth, prediction (crud returns dicts)
-    peak_hour = crud.get_average_peak_hour(db, 30)
-    peak_hour_data = peak_hour if isinstance(peak_hour, dict) else None
-    weekday = crud.get_weekday_stats(db, 30)
-    weekday_data = list(weekday) if weekday else []
-    averages = crud.get_averages(db)
-    averages_data = averages if isinstance(averages, dict) else None
-    growth = crud.get_growth_trend(db)
-    growth_data = growth if isinstance(growth, dict) else None
-    prediction = crud.predict_peak_hour(db, 30)
-    prediction_data = prediction if isinstance(prediction, dict) else None
-    # Current stats
-    current = cv_worker.get_status() if cv_worker else CurrentStats(camera_status="offline", model_loaded=False, fps=0.0)
-    current_data = current.model_dump() if hasattr(current, "model_dump") else {"in_count": 0, "out_count": 0, "active_tracks": 0, "camera_status": "offline", "model_loaded": False, "fps": 0.0}
-    return {
-        "current": current_data,
-        "day": day_stats,
-        "week": week_stats,
-        "month": month_stats,
-        "hourly": hourly,
-        "daily_range": daily_range,
-        "monthly_range": monthly_range,
-        "peak_hour_avg": peak_hour_data,
-        "weekday_stats": weekday_data,
-        "averages": averages_data,
-        "growth_trend": growth_data,
-        "predict_peak": prediction_data,
-    }
-
-
-async def broadcast_analytics_snapshot():
-    """Build analytics snapshot and broadcast to all WebSocket clients."""
-    if not active_connections:
+@app.websocket("/ws/{channel}")
+async def websocket_endpoint(ws: WebSocket, channel: str = "analytics"):
+    if channel not in ("analytics", "events", "status"):
+        await ws.close(code=4000)
         return
-    db = SessionLocal()
-    try:
-        payload = build_analytics_snapshot(db)
-        message = WSMessage(type="analytics", data=payload)
-        await broadcast_message(message.model_dump())
-    except Exception as e:
-        logger.warning("Analytics snapshot broadcast error: %s", e)
-    finally:
-        db.close()
 
+    await ws_manager.connect(ws, channel)
 
-async def build_dashboard_payload() -> dict:
-    """Build system_status + stats for admin dashboard (same as /api/system/status + /api/stats/current)."""
-    stream_mode = getattr(settings, "stream_mode", "local") or "local"
-    uptime = time.time() - app_start_time
-    if stream_mode == "vps":
-        vps = await vps_health.get_vps_status()
-        system_status = {
-            "camera_online": vps.status == "live",
-            "fps": 0.0,
-            "active_tracks": 0,
-            "model_loaded": cv_worker.model_loaded if cv_worker else False,
-            "uptime_seconds": uptime,
-            "stream_mode": "vps",
-            "vps_status": vps.status,
-        }
-        cam_status = "online" if vps.status == "live" else ("initializing" if vps.status == "connecting" else "offline")
-        if cv_worker:
-            st = cv_worker.get_status()
-            stats = st.model_dump()
-            stats["camera_status"] = cam_status
-            system_status["fps"] = st.fps
-            system_status["active_tracks"] = st.active_tracks
-            system_status["model_loaded"] = st.model_loaded
-        else:
-            stats = {"camera_status": cam_status, "model_loaded": False, "fps": 0.0, "in_count": 0, "out_count": 0, "active_tracks": 0}
-    else:
-        if cv_worker:
-            st = cv_worker.get_status()
-            stats = st.model_dump()
-            system_status = {
-                "camera_online": st.camera_status == "online",
-                "fps": st.fps,
-                "active_tracks": st.active_tracks,
-                "model_loaded": st.model_loaded,
-                "uptime_seconds": uptime,
-                "stream_mode": "local",
-                "vps_status": None,
-            }
-        else:
-            system_status = {"camera_online": False, "fps": 0.0, "active_tracks": 0, "model_loaded": False, "uptime_seconds": uptime, "stream_mode": "local", "vps_status": None}
-            stats = {"camera_status": "offline", "model_loaded": False, "fps": 0.0, "in_count": 0, "out_count": 0, "active_tracks": 0}
-    return {"system_status": system_status, "stats": stats}
-
-
-async def broadcast_dashboard_snapshot():
-    """Build dashboard payload and broadcast to all WebSocket clients."""
-    if not active_connections:
-        return
-    try:
-        payload = await build_dashboard_payload()
-        message = WSMessage(type="dashboard", data=payload)
-        await broadcast_message(message.model_dump())
-    except Exception as e:
-        logger.warning("Dashboard broadcast error: %s", e)
-
-
-async def broadcast_overlay_snapshot():
-    """Broadcast line + bboxes overlay for VPS stream (so frontend can draw on video)."""
-    if not active_connections or getattr(settings, "stream_mode", "local") != "vps" or not cv_worker:
-        return
-    try:
-        payload = cv_worker.get_overlay_data()
-        if not payload:
-            return
-        message = WSMessage(type="overlay", data=payload)
-        await broadcast_message(message.model_dump())
-    except Exception as e:
-        logger.debug("Overlay broadcast error: %s", e)
-
-
-# ============================================
-# WebSocket Endpoints
-# ============================================
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint for real-time updates."""
-    await websocket.accept()
-    active_connections.append(websocket)
-    
-    try:
-        # Send initial stats
-        if cv_worker:
-            stats = cv_worker.get_status()
-            message = WSMessage(type="stats", data=stats.model_dump())
-            await websocket.send_json(message.model_dump())
-        # Send initial analytics snapshot so analytics page has data without polling
+    if channel == "analytics":
+        db = SessionLocal()
         try:
-            db = SessionLocal()
-            try:
-                payload = build_analytics_snapshot(db)
-                await websocket.send_json(WSMessage(type="analytics", data=payload).model_dump())
-            finally:
-                db.close()
-        except Exception as e:
-            logger.debug("Initial analytics snapshot error: %s", e)
-        # Send initial dashboard (system_status + stats) for admin page
-        try:
-            payload = await build_dashboard_payload()
-            await websocket.send_json(WSMessage(type="dashboard", data=payload).model_dump())
-        except Exception as e:
-            logger.debug("Initial dashboard snapshot error: %s", e)
-        # Send initial overlay (line + boxes) for VPS so admin can draw on stream
-        if getattr(settings, "stream_mode", "local") == "vps" and cv_worker:
-            try:
-                overlay_payload = cv_worker.get_overlay_data()
-                if overlay_payload:
-                    await websocket.send_json(WSMessage(type="overlay", data=overlay_payload).model_dump())
-            except Exception as e:
-                logger.debug("Initial overlay snapshot error: %s", e)
-        
-        # Listen for messages (keep connection alive)
+            snapshot = {
+                "type": "analytics",
+                "data": {
+                    "day": analytics_svc.get_period_stats(db, "day"),
+                    "week": analytics_svc.get_period_stats(db, "week"),
+                    "month": analytics_svc.get_period_stats(db, "month"),
+                    "hourly": analytics_svc.get_hourly_stats(db),
+                    "averages": analytics_svc.get_averages(db),
+                    "growth_trend": analytics_svc.get_growth_trend(db),
+                    "predict_peak": analytics_svc.predict_peak_hour(db),
+                },
+            }
+            await ws.send_text(json.dumps(snapshot, default=str))
+        except Exception:
+            pass
+        finally:
+            db.close()
+
+    try:
         while True:
+            data = await ws.receive_text()
             try:
-                data = await asyncio.wait_for(websocket.receive_text(), timeout=0.1)
-            except asyncio.TimeoutError:
+                msg = json.loads(data)
+                if msg.get("type") == "ping":
+                    await ws.send_text(json.dumps({"type": "pong"}))
+            except json.JSONDecodeError:
                 pass
-            
-            # Drain event queue so crossings are broadcast immediately
-            while True:
-                try:
-                    event_type, event_data = event_queue.get_nowait()
-                    if event_type == "event":
-                        message = WSMessage(type="event", data=event_data.model_dump())
-                        await broadcast_message(message.model_dump())
-                except asyncio.QueueEmpty:
-                    break
-            await asyncio.sleep(0.005)
-    
     except WebSocketDisconnect:
-        if websocket in active_connections:
-            active_connections.remove(websocket)
-    except Exception as e:
-        print(f"WebSocket error: {e}")
-        if websocket in active_connections:
-            active_connections.remove(websocket)
+        ws_manager.disconnect(ws, channel)
 
 
-async def broadcast_message(message: dict):
-    """Broadcast message to all connected WebSocket clients."""
-    disconnected = []
-    
-    for connection in active_connections:
-        try:
-            await connection.send_json(message)
-        except:
-            disconnected.append(connection)
-    
-    # Remove disconnected clients
-    for connection in disconnected:
-        if connection in active_connections:
-            active_connections.remove(connection)
+# ── Stream management API ─────────────────────────────
 
+@app.post("/api/streams/{camera_id}/start")
+def start_stream_processing(
+    camera_id: str,
+    db: Session = Depends(get_db),
+):
+    """Start server-side CV processing for a camera."""
+    cam = db.query(Camera).filter(Camera.id == camera_id).first()
+    if not cam:
+        return {"error": "Camera not found"}
 
-async def broadcast_stats_periodically():
-    """Periodically broadcast current statistics to all clients."""
-    while True:
-        try:
-            await asyncio.sleep(2.0)
-            if cv_worker and active_connections:
-                stats = cv_worker.get_status()
-                message = WSMessage(type="stats", data=stats.model_dump())
-                await broadcast_message(message.model_dump())
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logger.warning("Stats broadcast error: %s", e)
+    source = cam.rtsp_url
+    if not source and cam.stream_key:
+        source = f"{settings.mediamtx_rtsp}/{cam.stream_key}"
+    if not source:
+        return {"error": "No stream source configured"}
 
-
-async def broadcast_analytics_periodically():
-    """Broadcast full analytics snapshot every 30s so analytics page can use WS instead of polling."""
-    while True:
-        try:
-            await asyncio.sleep(30.0)
-            await broadcast_analytics_snapshot()
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logger.warning("Analytics broadcast error: %s", e)
-
-
-async def broadcast_dashboard_periodically():
-    """Broadcast dashboard (system_status + stats) every 5s so admin page can use WS instead of polling."""
-    while True:
-        try:
-            await asyncio.sleep(5.0)
-            await broadcast_dashboard_snapshot()
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logger.warning("Dashboard broadcast error: %s", e)
-
-
-async def broadcast_overlay_periodically():
-    """Broadcast overlay (line + bboxes) for VPS stream so admin can draw on video (~2.5/s)."""
-    while True:
-        try:
-            await asyncio.sleep(0.4)
-            await broadcast_overlay_snapshot()
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logger.debug("Overlay broadcast error: %s", e)
-
-
-# ============================================
-# Video Streaming
-# ============================================
-
-async def generate_frames():
-    """Generate video frames for MJPEG streaming."""
-    logger.info("Video stream (MJPEG) started")
-    frame_count = 0
-    
-    while True:
-        try:
-            frame = await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: frame_queue.get(timeout=1.0)
-            )
-            
-            frame_count += 1
-            if frame_count % 30 == 0:
-                logger.debug("Streaming frame #%s", frame_count)
-            
-            # Encode frame as JPEG
-            ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            if not ret:
-                logger.warning("Failed to encode frame")
-                continue
-            
-            # Yield frame in multipart format
-            frame_bytes = buffer.tobytes()
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-        
-        except queue.Empty:
-            await asyncio.sleep(0.01)
-            continue
-        except Exception as e:
-            logger.exception("Frame generation error: %s", e)
-            await asyncio.sleep(0.1)
-
-
-@app.get("/video_feed")
-async def video_feed():
-    """Video streaming endpoint. In vps mode, stream is served from VPS (HLS/WebRTC); this endpoint returns 404."""
-    if getattr(settings, "stream_mode", "local") == "vps":
-        logger.debug("video_feed: returning 404 (VPS mode, use HLS/WebRTC URLs)")
-        return JSONResponse(
-            status_code=404,
-            content={
-                "detail": "In VPS mode video is played from VPS (HLS/WebRTC). Use /api/stream/config for URLs.",
-            },
-        )
-    return StreamingResponse(
-        generate_frames(),
-        media_type="multipart/x-mixed-replace; boundary=frame"
+    cv_manager.start_camera(
+        camera_id=str(cam.id),
+        source_url=source,
+        on_event=_on_cv_event,
+        on_status=_on_cv_status,
+        line_x=cam.line_x or 480,
+        direction_in=cam.direction_in or "L->R",
+        hysteresis_px=cam.hysteresis_px or 5,
     )
+    return {"status": "started"}
 
 
-# ============================================
-# Health Check
-# ============================================
+@app.post("/api/streams/{camera_id}/stop")
+def stop_stream_processing(camera_id: str):
+    cv_manager.stop_camera(camera_id)
+    return {"status": "stopped"}
+
+
+@app.get("/api/streams/status")
+def stream_statuses():
+    return cv_manager.get_all_statuses()
+
+
+# ── Health ────────────────────────────────────────────
 
 @app.get("/health")
-async def health_check():
-    """Health check endpoint."""
-    stream_mode = getattr(settings, "stream_mode", "local") or "local"
-    if stream_mode == "vps":
-        vps = await vps_health.get_vps_status()
-        return {
-            "status": "healthy",
-            "stream_mode": "vps",
-            "vps_status": vps.status,
-            "uptime": time.time() - app_start_time,
-        }
+def health():
     return {
-        "status": "healthy",
-        "camera": cv_worker.camera_status if cv_worker else "offline",
-        "model_loaded": cv_worker.model_loaded if cv_worker else False,
-        "uptime": time.time() - app_start_time,
+        "status": "ok",
+        "ws_connections": ws_manager.total_connections,
+        "cv_workers": len(cv_manager.workers),
     }
-
-
-if __name__ == "__main__":
-    uvicorn.run(
-        "app.main_new:app",
-        host=settings.host,
-        port=settings.port,
-        reload=False
-    )
