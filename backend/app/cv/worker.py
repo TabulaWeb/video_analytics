@@ -37,10 +37,10 @@ class CameraWorker:
         hysteresis_px: int = 5,
         on_event: Optional[Callable] = None,
         on_status: Optional[Callable] = None,
-        conf: float = 0.40,
-        iou: float = 0.5,
+        conf: float = 0.35,
+        iou: float = 0.45,
         resize_width: int = 640,
-        target_fps: float = 5,
+        target_fps: float = 10,
     ):
         self.camera_id = camera_id
         self.source_url = source_url
