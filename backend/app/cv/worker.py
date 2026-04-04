@@ -8,6 +8,7 @@ Key design decisions for stream quality:
 - Adaptive frame skipping for high-latency streams
 - Configurable confidence threshold per camera
 """
+import logging
 import os
 import threading
 import time
@@ -18,6 +19,8 @@ import cv2
 import numpy as np
 
 from app.cv.counter import LineCrossingCounter
+
+logger = logging.getLogger(__name__)
 
 _TRACKER_CFG = os.path.join(os.path.dirname(__file__), "bytetrack.yaml")
 
@@ -66,6 +69,11 @@ class CameraWorker:
         self._stop.clear()
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
+        logger.info(
+            "Worker STARTED cam=%s url=%s line_x=%d dir_in=%s hyst=%d",
+            self.camera_id, self.source_url,
+            self.counter.line_x, self.counter.direction_in, self.counter.hysteresis_px,
+        )
 
     def stop(self):
         self.running = False
@@ -162,8 +170,14 @@ class CameraWorker:
                     ids = results[0].boxes.id.cpu().numpy().astype(int)
                     for box, tid in zip(boxes, ids):
                         direction = self.counter.process(tid, tuple(box))
-                        if direction and self.on_event:
-                            self.on_event(self.camera_id, direction, int(tid))
+                        if direction:
+                            logger.info(
+                                "EVENT cam=%s dir=%s track=%d box=%s",
+                                self.camera_id, direction, tid,
+                                [round(float(v)) for v in box],
+                            )
+                            if self.on_event:
+                                self.on_event(self.camera_id, direction, int(tid))
 
                 self.last_frame = frame
                 frame_count += 1

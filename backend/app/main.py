@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -13,6 +14,8 @@ from app.api import auth, cameras, events, analytics
 from app.cv.worker import CVManager
 from app.ws.manager import ws_manager
 from app.services import analytics as analytics_svc
+
+logger = logging.getLogger(__name__)
 
 
 cv_manager = CVManager()
@@ -31,6 +34,7 @@ def _broadcast_safe(channel: str, data: dict):
 
 def _on_cv_event(camera_id: str, direction: str, track_id: int):
     """Callback from server-side CV worker when a line crossing is detected."""
+    logger.info("CV_EVENT cam=%s dir=%s track=%d", camera_id, direction, track_id)
     db = SessionLocal()
     try:
         db.add(Event(
@@ -44,6 +48,9 @@ def _on_cv_event(camera_id: str, direction: str, track_id: int):
             cam.last_seen_at = datetime.now(timezone.utc)
             cam.status = "online"
         db.commit()
+        logger.info("CV_EVENT saved cam=%s dir=%s track=%d", camera_id, direction, track_id)
+    except Exception as exc:
+        logger.error("CV_EVENT save FAILED cam=%s: %s", camera_id, exc)
     finally:
         db.close()
 
@@ -277,10 +284,12 @@ def stream_statuses():
 def on_stream_ready(path: str = Query(...)):
     """Called by MediaMTX when a publisher starts on a path (runOnReady)."""
     stream_key = path.strip("/")
+    logger.info("WEBHOOK ready path=%s stream_key=%s", path, stream_key)
     db = SessionLocal()
     try:
         cam = db.query(Camera).filter(Camera.stream_key == stream_key).first()
         if not cam:
+            logger.warning("WEBHOOK ready: no camera for stream_key=%s", stream_key)
             return {"ignored": True, "reason": "unknown stream_key"}
 
         cam.status = "online"
@@ -290,6 +299,10 @@ def on_stream_ready(path: str = Query(...)):
         db.commit()
 
         source = f"{settings.mediamtx_rtsp}/{stream_key}"
+        logger.info(
+            "WEBHOOK starting CV worker cam=%s source=%s line_x=%s dir_in=%s hyst=%s",
+            cam.id, source, cam.line_x, cam.direction_in, cam.hysteresis_px,
+        )
         cv_manager.start_camera(
             camera_id=str(cam.id),
             source_url=source,

@@ -1,9 +1,12 @@
 """Line-crossing counter with per-track cooldown to prevent double-counts."""
+import logging
 import time
 from dataclasses import dataclass
 from typing import Dict, Literal, Optional, Tuple
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -59,6 +62,10 @@ class LineCrossingCounter:
 
         if track_id not in self.tracks:
             self.tracks[track_id] = TrackState(track_id, cx, cy)
+            logger.debug(
+                "NEW track=%d cx=%.1f line_x=%d dir_in=%s",
+                track_id, cx, self.line_x, self.direction_in,
+            )
             return None
 
         track = self.tracks[track_id]
@@ -70,10 +77,21 @@ class LineCrossingCounter:
         margin = max(1, min(5, self.hysteresis_px // 2))
         result = None
 
-        if track.last_cx <= self.line_x - margin and cx >= self.line_x + margin:
+        crossed_lr = track.last_cx <= self.line_x - margin and cx >= self.line_x + margin
+        crossed_rl = track.last_cx >= self.line_x + margin and cx <= self.line_x - margin
+
+        if crossed_lr:
             result = "IN" if self.direction_in == "L->R" else "OUT"
-        elif track.last_cx >= self.line_x + margin and cx <= self.line_x - margin:
+        elif crossed_rl:
             result = "OUT" if self.direction_in == "L->R" else "IN"
+
+        near_line = abs(cx - self.line_x) < 40
+        if near_line:
+            logger.debug(
+                "track=%d last_cx=%.1f -> cx=%.1f | line_x=%d margin=%d dir_in=%s | LR=%s RL=%s",
+                track_id, track.last_cx, cx, self.line_x, margin,
+                self.direction_in, crossed_lr, crossed_rl,
+            )
 
         if result:
             self._last_cross[track_id] = self._calls
@@ -81,6 +99,11 @@ class LineCrossingCounter:
                 self.in_count += 1
             else:
                 self.out_count += 1
+            logger.info(
+                "CROSSING track=%d %s | last_cx=%.1f -> cx=%.1f | line_x=%d dir_in=%s | totals IN=%d OUT=%d",
+                track_id, result, track.last_cx, cx,
+                self.line_x, self.direction_in, self.in_count, self.out_count,
+            )
 
         track.update(cx, cy)
         return result

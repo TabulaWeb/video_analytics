@@ -36,6 +36,8 @@ services:
       ZAGA_MEDIAMTX_API: http://mediamtx:9997
       ZAGA_MEDIAMTX_RTSP: rtsp://mediamtx:8554
       ZAGA_MEDIAMTX_HLS: http://mediamtx:8888
+      ZAGA_LOG_LEVEL: DEBUG
+      ZAGA_ENV: production
     depends_on:
       postgres:
         condition: service_healthy
