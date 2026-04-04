@@ -18,7 +18,9 @@ services:
       retries: 5
 
   mediamtx:
-    image: bluenviron/mediamtx:latest
+    build:
+      context: ./infra
+      dockerfile: mediamtx.Dockerfile
     ports:
       - "8554:8554"
       - "8888:8888"
