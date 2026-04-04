@@ -264,6 +264,59 @@ def stream_statuses():
     return cv_manager.get_all_statuses()
 
 
+# ── MediaMTX webhooks ─────────────────────────────────
+
+@app.post("/api/streams/webhook/ready")
+def on_stream_ready(path: str = Query(...)):
+    """Called by MediaMTX when a publisher starts on a path (runOnReady)."""
+    stream_key = path.strip("/")
+    db = SessionLocal()
+    try:
+        cam = db.query(Camera).filter(Camera.stream_key == stream_key).first()
+        if not cam:
+            return {"ignored": True, "reason": "unknown stream_key"}
+
+        cam.status = "online"
+        cam.is_active = True
+        cam.last_seen_at = datetime.now(timezone.utc)
+        db.add(CameraLog(camera_id=cam.id, level="info", message=f"Stream started: {stream_key}"))
+        db.commit()
+
+        source = f"{settings.mediamtx_rtsp}/{stream_key}"
+        cv_manager.start_camera(
+            camera_id=str(cam.id),
+            source_url=source,
+            on_event=_on_cv_event,
+            on_status=_on_cv_status,
+            line_x=cam.line_x or 480,
+            direction_in=cam.direction_in or "L->R",
+            hysteresis_px=cam.hysteresis_px or 5,
+        )
+        return {"started": True, "camera_id": str(cam.id)}
+    finally:
+        db.close()
+
+
+@app.post("/api/streams/webhook/not-ready")
+def on_stream_not_ready(path: str = Query(...)):
+    """Called by MediaMTX when a publisher disconnects (runOnNotReady)."""
+    stream_key = path.strip("/")
+    db = SessionLocal()
+    try:
+        cam = db.query(Camera).filter(Camera.stream_key == stream_key).first()
+        if not cam:
+            return {"ignored": True}
+
+        cv_manager.stop_camera(str(cam.id))
+        cam.status = "offline"
+        cam.is_active = False
+        db.add(CameraLog(camera_id=cam.id, level="info", message=f"Stream stopped: {stream_key}"))
+        db.commit()
+        return {"stopped": True, "camera_id": str(cam.id)}
+    finally:
+        db.close()
+
+
 # ── Health ────────────────────────────────────────────
 
 @app.get("/health")

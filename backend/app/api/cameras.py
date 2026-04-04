@@ -14,12 +14,15 @@ router = APIRouter(prefix="/api/cameras", tags=["cameras"])
 @router.get("", response_model=List[CameraOut])
 def list_cameras(
     active_only: bool = False,
+    processing_mode: Optional[str] = None,
     db: Session = Depends(get_db),
     _user: User = Depends(get_current_user),
 ):
     q = db.query(Camera)
     if active_only:
         q = q.filter(Camera.is_active.is_(True))
+    if processing_mode:
+        q = q.filter(Camera.processing_mode == processing_mode)
     return q.order_by(Camera.created_at).all()
 
 

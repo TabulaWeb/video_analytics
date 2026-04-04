@@ -20,3 +20,8 @@ rtmpAddress: :1935
 paths:
   all_others:
     source: publisher
+    runOnReady: >
+      curl -s -X POST "http://backend:8000/api/streams/webhook/ready?path=$MTX_PATH"
+    runOnReadyRestart: no
+    runOnNotReady: >
+      curl -s -X POST "http://backend:8000/api/streams/webhook/not-ready?path=$MTX_PATH"
