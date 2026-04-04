@@ -16,6 +16,17 @@ from app.services import analytics as analytics_svc
 
 
 cv_manager = CVManager()
+_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _broadcast_safe(channel: str, data: dict):
+    """Thread-safe broadcast to WebSocket clients."""
+    if _loop is None or _loop.is_closed():
+        return
+    try:
+        _loop.call_soon_threadsafe(asyncio.ensure_future, ws_manager.broadcast(channel, data))
+    except RuntimeError:
+        pass
 
 
 def _on_cv_event(camera_id: str, direction: str, track_id: int):
@@ -36,16 +47,13 @@ def _on_cv_event(camera_id: str, direction: str, track_id: int):
     finally:
         db.close()
 
-    asyncio.get_event_loop().call_soon_threadsafe(
-        asyncio.ensure_future,
-        ws_manager.broadcast("events", {
-            "type": "crossing",
-            "camera_id": camera_id,
-            "direction": direction,
-            "track_id": track_id,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }),
-    )
+    _broadcast_safe("events", {
+        "type": "crossing",
+        "camera_id": camera_id,
+        "direction": direction,
+        "track_id": track_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
 
 
 def _on_cv_status(camera_id: str, status: str, message: str):
@@ -63,15 +71,12 @@ def _on_cv_status(camera_id: str, status: str, message: str):
     finally:
         db.close()
 
-    asyncio.get_event_loop().call_soon_threadsafe(
-        asyncio.ensure_future,
-        ws_manager.broadcast("status", {
-            "type": "camera_status",
-            "camera_id": camera_id,
-            "status": status,
-            "message": message,
-        }),
-    )
+    _broadcast_safe("status", {
+        "type": "camera_status",
+        "camera_id": camera_id,
+        "status": status,
+        "message": message,
+    })
 
 
 def _start_server_cameras():
@@ -154,6 +159,8 @@ def _ensure_default_admin():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _loop
+    _loop = asyncio.get_running_loop()
     Base.metadata.create_all(bind=engine)
     _ensure_default_admin()
     _start_server_cameras()
