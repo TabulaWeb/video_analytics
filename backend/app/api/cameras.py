@@ -63,13 +63,29 @@ def update_camera(
     if not cam:
         raise HTTPException(status_code=404, detail="Camera not found")
 
+    cv_keys = {"line_x", "direction_in", "hysteresis_px"}
+    changed_cv = set()
+
     for key, value in body.model_dump(exclude_unset=True).items():
         if key == "password" and not value:
             continue
+        if key in cv_keys and getattr(cam, key) != value:
+            changed_cv.add(key)
         setattr(cam, key, value)
 
     db.commit()
     db.refresh(cam)
+
+    if changed_cv and cam.processing_mode == "server":
+        from app.main import cv_manager
+        worker = cv_manager.workers.get(str(cam.id))
+        if worker:
+            worker.counter.update_config(
+                line_x=cam.line_x,
+                direction_in=cam.direction_in,
+                hysteresis_px=cam.hysteresis_px,
+            )
+
     return cam
 
 
