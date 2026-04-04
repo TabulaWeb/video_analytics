@@ -1,28 +1,23 @@
 """Server-side CV worker for processing video streams from cameras.
 
-Handles the business requirement: "just stream to the server and let it analyze".
-
-Key design decisions for stream quality:
-- Use RTSP TCP transport (no UDP packet loss)
-- Process frames without re-encoding (read raw from decoder)
-- Adaptive frame skipping for high-latency streams
-- Configurable confidence threshold per camera
+Uses a centroid-distance tracker instead of ByteTrack.  ByteTrack relies on
+IoU overlap, which breaks when a person fills most of the frame (close-up
+entrance cameras).  The centroid tracker matches by Euclidean distance between
+detection centers, which stays small even when the bbox shape shifts.
 """
 import logging
 import os
 import threading
 import time
-from datetime import datetime, timezone
 from typing import Callable, Dict, Optional
 
 import cv2
 import numpy as np
 
 from app.cv.counter import LineCrossingCounter
+from app.cv.tracker import CentroidTracker
 
 logger = logging.getLogger(__name__)
-
-_TRACKER_CFG = os.path.join(os.path.dirname(__file__), "bytetrack.yaml")
 
 
 class CameraWorker:
@@ -53,6 +48,7 @@ class CameraWorker:
         self.frame_interval = 1.0 / target_fps if target_fps > 0 else 0
 
         self.counter = LineCrossingCounter(line_x, hysteresis_px, direction_in)
+        self.tracker = CentroidTracker(max_distance=150, max_lost=20)
         self.model = None
         self.cap: Optional[cv2.VideoCapture] = None
         self.running = False
@@ -70,9 +66,10 @@ class CameraWorker:
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
         logger.info(
-            "Worker STARTED cam=%s url=%s line_x=%d dir_in=%s hyst=%d",
+            "Worker STARTED cam=%s url=%s line_x=%d dir_in=%s hyst=%d fps=%d",
             self.camera_id, self.source_url,
-            self.counter.line_x, self.counter.direction_in, self.counter.hysteresis_px,
+            self.counter.line_x, self.counter.direction_in,
+            self.counter.hysteresis_px, self.target_fps,
         )
 
     def stop(self):
@@ -90,7 +87,9 @@ class CameraWorker:
     def _open_capture(self) -> bool:
         """Open video capture with TCP transport for RTSP reliability."""
         try:
-            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|analyzeduration;2000000|probesize;1000000"
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+                "rtsp_transport;tcp|analyzeduration;2000000|probesize;1000000"
+            )
             self.cap = cv2.VideoCapture(self.source_url, cv2.CAP_FFMPEG)
             if not self.cap.isOpened():
                 self._report_status("error", f"Cannot open stream: {self.source_url}")
@@ -131,7 +130,6 @@ class CameraWorker:
             fps_start = time.time()
             consecutive_failures = 0
             last_process_time = 0.0
-            tracker_cfg = _TRACKER_CFG if os.path.isfile(_TRACKER_CFG) else "bytetrack.yaml"
 
             while self.running and not self._stop.is_set():
                 ret, frame = self.cap.read()
@@ -155,29 +153,30 @@ class CameraWorker:
                         ratio = self.resize_width / w
                         frame = cv2.resize(frame, (self.resize_width, int(h * ratio)))
 
-                results = self.model.track(
+                results = self.model.predict(
                     frame,
-                    persist=True,
-                    tracker=tracker_cfg,
                     conf=self.conf,
                     iou=self.iou,
                     classes=[0],
                     verbose=False,
                 )
 
-                if results and results[0].boxes is not None and results[0].boxes.id is not None:
+                boxes = np.empty((0, 4))
+                if results and results[0].boxes is not None and len(results[0].boxes):
                     boxes = results[0].boxes.xyxy.cpu().numpy()
-                    ids = results[0].boxes.id.cpu().numpy().astype(int)
-                    for box, tid in zip(boxes, ids):
-                        direction = self.counter.process(tid, tuple(box))
-                        if direction:
-                            logger.info(
-                                "EVENT cam=%s dir=%s track=%d box=%s",
-                                self.camera_id, direction, tid,
-                                [round(float(v)) for v in box],
-                            )
-                            if self.on_event:
-                                self.on_event(self.camera_id, direction, int(tid))
+
+                tracked = self.tracker.update(boxes)
+
+                for tid, box in tracked:
+                    direction = self.counter.process(tid, box)
+                    if direction:
+                        logger.info(
+                            "EVENT cam=%s dir=%s track=%d box=%s",
+                            self.camera_id, direction, tid,
+                            [round(float(v)) for v in box],
+                        )
+                        if self.on_event:
+                            self.on_event(self.camera_id, direction, int(tid))
 
                 self.last_frame = frame
                 frame_count += 1
