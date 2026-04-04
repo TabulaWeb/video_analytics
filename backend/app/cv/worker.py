@@ -36,7 +36,8 @@ class CameraWorker:
         on_status: Optional[Callable] = None,
         conf: float = 0.40,
         iou: float = 0.5,
-        resize_width: int = 960,
+        resize_width: int = 640,
+        target_fps: float = 5,
     ):
         self.camera_id = camera_id
         self.source_url = source_url
@@ -45,6 +46,8 @@ class CameraWorker:
         self.conf = conf
         self.iou = iou
         self.resize_width = resize_width
+        self.target_fps = target_fps
+        self.frame_interval = 1.0 / target_fps if target_fps > 0 else 0
 
         self.counter = LineCrossingCounter(line_x, hysteresis_px, direction_in)
         self.model = None
@@ -119,6 +122,7 @@ class CameraWorker:
             frame_count = 0
             fps_start = time.time()
             consecutive_failures = 0
+            last_process_time = 0.0
             tracker_cfg = _TRACKER_CFG if os.path.isfile(_TRACKER_CFG) else "bytetrack.yaml"
 
             while self.running and not self._stop.is_set():
@@ -131,6 +135,11 @@ class CameraWorker:
                     time.sleep(0.05)
                     continue
                 consecutive_failures = 0
+
+                now = time.time()
+                if now - last_process_time < self.frame_interval:
+                    continue
+                last_process_time = now
 
                 if self.resize_width > 0:
                     h, w = frame.shape[:2]
